@@ -1,4 +1,4 @@
-name: HMCST
+name: AssemblyStyleTransfer
 channels:
   - pytorch
   - huggingface

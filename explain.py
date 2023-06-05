@@ -4,7 +4,7 @@ Run the explanation algorithm.
 
 import os
 
-from utils import add_prefix_to_csv
+from utils import adjust_csv_rows
 
 
 def fn(row: list) -> list:
@@ -15,8 +15,8 @@ def fn(row: list) -> list:
 
 
 if __name__ == "__main__":
-    add_prefix_to_csv(
-    '/home/lk3591/Documents/code/HMCST/data/bounds.csv',
-    '/home/lk3591/Documents/code/HMCST/data/bounds_full.csv',
-    fn,
-)
+    adjust_csv_rows(
+        "/home/lk3591/Documents/code/HMCST/data/bounds.csv",
+        "/home/lk3591/Documents/code/HMCST/data/bounds_full.csv",
+        fn,
+    )

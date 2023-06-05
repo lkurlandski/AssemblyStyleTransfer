@@ -1,8 +1,5 @@
 """
-Prepare executable datasets.
-
-TODO:
-    - use IDA instead of capstone because of the data issue
+Acquire data for learning, including downloading and disassembling (Network-intensive).
 """
 
 from argparse import ArgumentParser
@@ -16,18 +13,14 @@ import shutil
 import subprocess
 import time
 import typing as tp
+import warnings
 import zlib
 
 import capstone
 from tqdm import tqdm
 
+import cfg
 from utils import disasm, instruction_as_str, get_text_section_bounds, read_file
-
-
-BUCKET = "s3://sorel-20m/09-DEC-2020/binaries/"
-UPX = "/home/lk3591/.local/share/upx-4.0.1-amd64_linux/upx"
-ARCH = capstone.CS_ARCH_X86
-MODE = capstone.CS_MODE_32
 
 
 def chop_snippets(
@@ -38,6 +31,8 @@ def chop_snippets(
     ben_threshold: float,
     mal_threshold: float,
 ) -> None:
+    print("Chopping...", flush=True)
+
     def get_outpath(f: Path, a: float, i: int) -> tp.Optional[Path]:
         if a < ben_threshold:
             return (ben_path / f"{f.stem}_{i}").with_suffix(".asm")
@@ -53,11 +48,16 @@ def chop_snippets(
         summary = {Path(f).name: v for f, v in json.load(handle).items()}
 
     for f in files:
-        offsets, attribs = list(zip(*summary[(f.with_suffix(".exe")).name]))
+        if (key := f.with_suffix(".exe").name) not in summary:
+            warnings.warn(f"Found disassembly for {f.name}, but have no attributions for it.")
+            continue
+        offsets, attribs = list(zip(*summary[key]))
         i, snippet = 0, []
 
         with open(f, encoding="utf-8") as handle_in:
             for line in handle_in:
+                if line == "\n":
+                    break
                 offset, instruction = line.rstrip().split("\t")
                 snippet.append(f"{offset}\t{instruction}")
 
@@ -75,10 +75,12 @@ def chop_snippets(
 
 
 def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, remove: bool) -> None:
+    print("Disassembling...", flush=True)
+
     def format_fn(ins):
         return instruction_as_str(ins, address=True)
 
-    md = capstone.Cs(ARCH, MODE)
+    md = capstone.Cs(cfg.ARCH, cfg.MODE)
 
     name_file_map = {f.name: f for f in files}
 
@@ -108,6 +110,7 @@ def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, rem
 
 
 def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bool, remove: bool) -> None:
+    print("Parsing...", flush=True)
 
     with open(bounds_file, mode="w", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -128,6 +131,8 @@ def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bo
 
 
 def filter_(files: Collection[Path], dest_path: Path, max_len: int, remove: bool) -> None:
+    print("Filtering...", flush=True)
+
     def fn(p: Path) -> bool:
         if p.stat().st_size == 0:
             return False
@@ -147,28 +152,28 @@ def filter_(files: Collection[Path], dest_path: Path, max_len: int, remove: bool
 
 
 def unpack(files: Collection[Path], dest_path: Path, remove: bool) -> None:
+    print("Unpacking...", flush=True)
 
-    command = [UPX, "-d", "{PACKED_FILE}", "-o", "{DEST_PATH}"]
+    command = [cfg.UPX, "-d", "{PACKED_FILE}", "-o", "{DEST_PATH}"]
 
     for f in tqdm(files):
         f_out = dest_path / f.name
         command[2] = f.as_posix()
         command[4] = (dest_path / f.name).as_posix()
-        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         if result.returncode == 1:
             shutil.copy(f, f_out)
         elif result.returncode == 2:
             shutil.copy(f, f_out)
         else:
-            print(result)
+            warnings.warn(result)
 
         if remove:
             f.unlink()
 
 
 def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
-
-    print("Extracting...")
+    print("Extracting...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
 
@@ -182,13 +187,12 @@ def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
 
 
 def download(dest_path: Path, n_files: int) -> None:
-
     WAIT = 5
 
-    print("Downloading...")
+    print("Downloading...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
-    command = f"aws s3 cp {BUCKET} {dest_path} --recursive --no-sign-request --quiet"
+    command = f"{cfg.AWS} s3 cp {cfg.BUCKET} {dest_path} --recursive --no-sign-request --quiet"
     subprocess.Popen(command, shell=True)
     with tqdm(total=n_files) as pbar:
         while True:
@@ -289,7 +293,6 @@ def main(
     removes: RemoveArgs,
     clean: CleanArgs,
 ) -> None:
-
     if clean.download:
         shutil.rmtree(paths.download, ignore_errors=True)
     if clean.extract:
@@ -355,7 +358,6 @@ def main(
 
 
 if __name__ == "__main__":
-
     parser = ArgumentParser()
 
     parser.add_argument("--root", type=Path, help="Path")
@@ -372,8 +374,8 @@ if __name__ == "__main__":
     parser.add_argument("--n_files", type=int, default=ParamArgs.n_files, help="PARAM")
     parser.add_argument("--max_len", type=int, default=ParamArgs.max_len, help="PARAM")
     parser.add_argument("--posix", action="store_true", help="PARAM")
-    parser.add_argument("--mal_threshold", type=int, default=ParamArgs.mal_threshold, help="PARAM")
-    parser.add_argument("--ben_threshold", type=int, default=ParamArgs.ben_threshold, help="PARAM")
+    parser.add_argument("--mal_threshold", type=float, default=ParamArgs.mal_threshold, help="PARAM")
+    parser.add_argument("--ben_threshold", type=float, default=ParamArgs.ben_threshold, help="PARAM")
 
     parser.add_argument("--remove_download", action="store_true", help="REMOVE-AFTER")
     parser.add_argument("--remove_extract", action="store_true", help="REMOVE-AFTER")

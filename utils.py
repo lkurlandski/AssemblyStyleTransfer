@@ -15,7 +15,6 @@ def clear_cache(*datasets) -> list[int]:
 
 
 def adjust_csv_rows(in_file: Path, out_file: Path, adjust_fn: tp.Callable, skip_header: bool = True) -> None:
-
     with open(in_file, "r", encoding="utf-8") as in_handle, open(out_file, "w") as out_handle:
         reader = csv.reader(in_handle)
         writer = csv.writer(out_handle)
@@ -56,14 +55,13 @@ def disasm(md: capstone.Cs, code: bytes, format_fn: tp.Callable = tuple, start: 
 
 
 def read_file(file: Path, l: int = None, u: int = None) -> bytes:
-    with open(file, "rb") as handle:
+    with open(file, "rb", encoding=None) as handle:
         handle.seek(l)
         binary = handle.read(u)
     return binary
 
 
 def convert_size(size: tp.Union[int, float, str]) -> tp.Union[float, str]:
-
     symbols_to_size = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
 
     if isinstance(size, (int, float)):
@@ -80,7 +78,7 @@ def convert_size(size: tp.Union[int, float, str]) -> tp.Union[float, str]:
             if size.replace(s, "").isdigit():
                 return float(size.replace(s, "")) * d
 
-    raise Exception()
+    raise TypeError()
 
 
 def files_in_dir(path: Path) -> int:
