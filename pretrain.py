@@ -20,7 +20,16 @@ from transformers import (
 import preprocess
 
 
-def train_mlm_encoder(dataset: DatasetDict, tokenizer: PreTrainedTokenizer) -> PreTrainedModel:
+ENCODER_PATH = Path("./models/encoder")
+DECODER_PATH = Path("./models/decoder")
+
+
+def train_mlm_encoder(
+    dataset: DatasetDict,
+    tokenizer: PreTrainedTokenizer,
+    output_dir: Path = ENCODER_PATH,
+    overwrite_output_dir: bool = False,
+) -> PreTrainedModel:
     config = transformers.BertConfig(
         vocab_size=tokenizer.vocab_size,
         hidden_size=64,
@@ -37,8 +46,8 @@ def train_mlm_encoder(dataset: DatasetDict, tokenizer: PreTrainedTokenizer) -> P
     encoder = AutoModelForMaskedLM.from_config(config)
     data_collator = DataCollatorForLanguageModeling(tokenizer)
     train_args = TrainingArguments(
-        output_dir="./models/encoder",
-        overwrite_output_dir=True,
+        output_dir=output_dir.as_posix(),
+        overwrite_output_dir=overwrite_output_dir,
         do_train=True,
         do_eval=True,
         optim="adamw_torch",
@@ -64,7 +73,12 @@ def train_mlm_encoder(dataset: DatasetDict, tokenizer: PreTrainedTokenizer) -> P
     return encoder
 
 
-def train_clm_decoder(dataset: DatasetDict, tokenizer: PreTrainedTokenizer) -> PreTrainedModel:
+def train_clm_decoder(
+    dataset: DatasetDict,
+    tokenizer: PreTrainedTokenizer,
+    output_dir: Path = DECODER_PATH,
+    overwrite_output_dir: bool = False,
+) -> PreTrainedModel:
     config = transformers.GPT2Config(
         vocab_size=tokenizer.vocab_size,
         n_positions=tokenizer.model_max_length,
@@ -79,8 +93,8 @@ def train_clm_decoder(dataset: DatasetDict, tokenizer: PreTrainedTokenizer) -> P
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
     train_args = TrainingArguments(
-        output_dir="./models/decoder",
-        overwrite_output_dir=True,
+        output_dir=output_dir.as_posix(),
+        overwrite_output_dir=overwrite_output_dir,
         do_train=True,
         do_eval=True,
         optim="adamw_torch",
@@ -113,7 +127,9 @@ def main(
     tr_encoder: bool,
     tr_decoder: bool,
 ) -> None:
-    fast_tokenizer, split_tokenized_dataset = preprocess.main(paths, token_args, preprocess.DatasetArgs())
+    fast_tokenizer, split_tokenized_dataset = preprocess.main(
+        paths, token_args, preprocess.DatasetArgs(), pretrain=True
+    )
     print(f"{fast_tokenizer=}", flush=True)
     print(f"{split_tokenized_dataset=}", flush=True)
 
@@ -128,7 +144,7 @@ def main(
 if __name__ == "__main__":
     parser = ArgumentParser(description="Your program description.")
     parser.add_argument("--root", type=Path, help="Path")
-    parser.add_argument("--model", type=str)
+    parser.add_argument("--model", default=preprocess.TokenizerArgs.model, type=str)
     parser.add_argument("--tr_encoder", action="store_true")
     parser.add_argument("--tr_decoder", action="store_true")
     args = parser.parse_args()

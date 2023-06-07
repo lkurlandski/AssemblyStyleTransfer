@@ -2,12 +2,33 @@
 Useful functions.
 """
 
+from collections.abc import Collection, Iterable
 import csv
 from pathlib import Path
 import typing as tp
 
 import capstone
 import pefile
+
+
+def get_highest_path(
+    path_or_files: Collection[Path] | Path,
+    lstrip: str = "",
+    rstrip: str = "",
+) -> Path:
+    if isinstance(path_or_files, (Path, str)):
+        files = Path(path_or_files).iterdir()
+    else:
+        files = path_or_files
+    return list(sorted(files, key=lambda p: int(p.stem.lstrip(lstrip).rstrip())))[-1]
+
+
+def mem(path_or_files: Collection[Path] | Path) -> float:
+    if isinstance(path_or_files, (Path, str)):
+        files = Path(path_or_files).iterdir()
+    else:
+        files = path_or_files
+    return sum(f.stat().st_size for f in files) * 10e-9
 
 
 def clear_cache(*datasets) -> list[int]:
@@ -54,7 +75,7 @@ def disasm(md: capstone.Cs, code: bytes, format_fn: tp.Callable = tuple, start: 
     return [format_fn(i) for i in md.disasm_lite(code, start)]
 
 
-def read_file(file: Path, l: int = None, u: int = None) -> bytes:
+def read_file(file: Path, l: tp.Optional[int] = None, u: tp.Optional[int] = None) -> bytes:
     with open(file, "rb", encoding=None) as handle:
         handle.seek(l)
         binary = handle.read(u)
