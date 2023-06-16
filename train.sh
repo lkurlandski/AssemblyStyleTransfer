@@ -20,8 +20,6 @@
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate HMCST
 torchrun --nproc-per-node 2 \
-pretrain.py \
---model="WordLevel" \
---tr_encoder \
---tr_decoder
-
+train.py \
+--unsupervised \
+--model="WordLevel"

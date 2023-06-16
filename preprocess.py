@@ -19,7 +19,7 @@ from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, Pretraine
 
 import cfg
 import prepare
-import utils
+from utils import mem, OutputManager
 
 
 TOKENIZERS = ("WordLevel", "WordPiece", "BPE", "Unigram")
@@ -51,23 +51,8 @@ def batch_iterator_pretraining(dataset: Dataset, batch_size: int) -> tp.Generato
         yield dataset[i : i + batch_size]["text"]
 
 
-def get_tokenizer(
-    path: Path = None,
-    model: str = "WordLevel",
-    dataset: Dataset = None,
-    cache: bool = True,
-) -> Tokenizer:
-    post_processor = processors.TemplateProcessing(
-        single=f"{cfg.BOS} $0 {cfg.EOS}",
-        pair=f"{cfg.BOS} $A {cfg.EOS} {cfg.BOS} $B:1 {cfg.EOS}:1",
-        special_tokens=[(t, i) for i, t in enumerate(cfg.SPECIALS)],
-    )
-
-    if path is not None and path.exists() and cache:
-        print(f"Using tokenizer from {path.as_posix()}")
-        tokenizer: Tokenizer = Tokenizer.from_file(path.as_posix())
-        tokenizer.post_processor = post_processor
-        return tokenizer
+def train_tokenizer(dataset: Dataset = None, model: str = "WordLevel", path: Path = None) -> Tokenizer:
+    print("Training tokenizer...", flush=True)
 
     if model == "WordLevel":
         model = models.WordLevel(unk_token=cfg.UNK)
@@ -103,16 +88,35 @@ def get_tokenizer(
 
     tokenizer.normalizer = normalizer
     tokenizer.pre_tokenizer = pre_tokenizer
-    tokenizer.post_processor = post_processor
 
-    print("Training tokenizer...")
     tokenizer.train_from_iterator(batch_iterator_pretraining(dataset, 1024), trainer, length=len(dataset))
 
     if path is not None:
-        print(f"Saving tokenizer to {path.as_posix()}")
+        print(f"Saving tokenizer to {path.as_posix()}", flush=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         tokenizer.save(path.as_posix())
 
+    return tokenizer
+
+
+def get_tokenizer(
+    path: Path = None,
+    model: str = "WordLevel",
+    dataset: Dataset = None,
+    use_cache: bool = True,
+) -> Tokenizer:
+
+    if path is not None and path.exists() and use_cache:
+        print(f"Using tokenizer from {path.as_posix()}")
+        tokenizer: Tokenizer = Tokenizer.from_file(path.as_posix())
+    else:
+        tokenizer = train_tokenizer(dataset, model, path)
+
+    tokenizer.post_processor = processors.TemplateProcessing(
+        single=f"{cfg.BOS} $0 {cfg.EOS}",
+        pair=f"{cfg.BOS} $A {cfg.EOS} {cfg.BOS} $B:1 {cfg.EOS}:1",
+        special_tokens=[(t, i) for i, t in enumerate(cfg.SPECIALS)],
+    )
     return tokenizer
 
 
@@ -156,7 +160,7 @@ def get_pretrained_tokenizer_specific(
     raise NotImplementedError()
 
 
-def get_pretraining_dataset(files: Collection[Path]) -> Dataset:
+def get_raw_assembly_dataset(files: Collection[Path]) -> Dataset:
     def gen():
         for f in files:
             snippet = f.read_text()
@@ -167,8 +171,8 @@ def get_pretraining_dataset(files: Collection[Path]) -> Dataset:
 
 
 def get_processed_pretraining_dataset(
-    dataset: Dataset = None,
-    tokenizer: PreTrainedTokenizerFast = None,
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
     load_from_cache_file: bool = True,
     n_instructions: int = 48,
     **kwargs,
@@ -218,8 +222,8 @@ def get_unsupervised_dataset(
 
 
 def get_processed_pseudosupervised_dataset(
-    dataset: Dataset = None,
-    tokenizer: PreTrainedTokenizerFast = None,
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
     load_from_cache_file: bool = True,
     **kwargs,
 ) -> Dataset:
@@ -231,8 +235,8 @@ def get_processed_pseudosupervised_dataset(
 
 
 def get_processed_unsupervised_dataset(
-    dataset: Dataset = None,
-    tokenizer: PreTrainedTokenizerFast = None,
+    dataset: Dataset,
+    tokenizer: PreTrainedTokenizerFast,
     load_from_cache_file: bool = True,
     **kwargs,
 ) -> Dataset:
@@ -249,23 +253,6 @@ def get_processed_unsupervised_dataset(
 
 
 @dataclass
-class PathArgs:
-    root: Path
-    disassemble: Path = prepare.PathArgs.disassemble
-    tokenizers: Path = Path("tokenizers")
-    snippets: Path = prepare.PathArgs.snippets
-    snippets_mal: Path = prepare.PathArgs.snippets_mal
-    snippets_ben: Path = prepare.PathArgs.snippets_ben
-
-    def __post_init__(self) -> None:
-        self.disassemble = self.root / self.disassemble
-        self.tokenizers = self.root / self.tokenizers
-        self.snippets = self.root / self.snippets
-        self.snippets_mal = self.snippets / "mal"
-        self.snippets_ben = self.snippets / "ben"
-
-
-@dataclass
 class TokenizerArgs:
     model: str = "WordLevel"
     model_max_length: int = 256
@@ -277,13 +264,13 @@ class TokenizerArgs:
 class DatasetArgs:
     test_size: int = 0.1
     use_cache: bool = True
-    clear_cache: bool = False
     subsample: tp.Optional[int] = None
     mode: tp.Literal["min", "repeat", "empty"] = "min"
+    clear_cache: bool = False
 
 
 def main(
-    paths: PathArgs,
+    paths: OutputManager,
     token_args: TokenizerArgs,
     data_args: DatasetArgs,
     pretrain: bool = False,
@@ -295,9 +282,9 @@ def main(
     assert any(set(actions)) and not all(set(actions)), "Exactly one action must be selected."
 
     files = [p for p in paths.disassemble.iterdir() if p.suffix == ".asm"]
-    print(f"Found {round(utils.mem(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
+    print(f"Found {round(mem(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
     print("Getting pretraining dataset...", flush=True)
-    dataset = get_pretraining_dataset(files)
+    dataset = get_raw_assembly_dataset(files)
     if data_args.clear_cache:
         dataset.cleanup_cache_files()
     if data_args.subsample is not None:
@@ -308,8 +295,6 @@ def main(
     paths.tokenizers.mkdir(exist_ok=True)
     tokenizer_file = get_tokenizer_file(paths.tokenizers, token_args.model)
     tokenizer = get_tokenizer(tokenizer_file, token_args.model, dataset, token_args.use_cache)
-    if token_args.clear_cache:
-        tokenizer_file.unlink()
     print(f"{tokenizer=}", flush=True)
     fast_tokenizer = get_pretrained_tokenizer(tokenizer, model_max_length=token_args.model_max_length)
     print(f"{fast_tokenizer=}", flush=True)
@@ -339,8 +324,8 @@ def main(
 
     mal_files = [p for p in paths.snippets_mal.iterdir() if p.suffix == ".asm"]
     ben_files = [p for p in paths.snippets_ben.iterdir() if p.suffix == ".asm"]
-    print(f"Found {round(utils.mem(mal_files), 1)}G of mal_files in {paths.snippets_mal.as_posix()}", flush=True)
-    print(f"Found {round(utils.mem(ben_files), 1)}G of mal_files in {paths.snippets_ben.as_posix()}", flush=True)
+    print(f"Found {round(mem(mal_files), 1)}G of mal_files in {paths.snippets_mal.as_posix()}", flush=True)
+    print(f"Found {round(mem(ben_files), 1)}G of mal_files in {paths.snippets_ben.as_posix()}", flush=True)
     print("Getting seq2seq dataset...", flush=True)
     dataset = get_unsupervised_dataset(mal_files, ben_files, data_args.mode)
     if data_args.clear_cache:
@@ -351,7 +336,7 @@ def main(
 
     if pseudosupervised:
         print("Tokenizing pseudosupervised dataset...", flush=True)
-        tokenized_dataset = get_processed_unsupervised_dataset(
+        tokenized_dataset = get_processed_pseudosupervised_dataset(
             dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
         )
     elif unsupervised:
@@ -373,9 +358,9 @@ def main(
     return fast_tokenizer, split_tokenized_dataset
 
 
-def debug():
+def debug() -> None:
     main(
-        PathArgs("./data"),
+        OutputManager("./data"),
         TokenizerArgs(),
         DatasetArgs(),
         False,
@@ -383,10 +368,9 @@ def debug():
     )
 
 
-if __name__ == "__main__":
+def cli() -> None:
     parser = ArgumentParser(description="Your program description.")
 
-    parser.add_argument("--root", type=Path)
     parser.add_argument("--pretrain", action="store_true")
     parser.add_argument("--pseudosupervised", action="store_true")
     parser.add_argument("--unsupervised", action="store_true")
@@ -395,30 +379,32 @@ if __name__ == "__main__":
     parser.add_argument("--test_size", type=float, default=DatasetArgs.test_size)
     parser.add_argument("--mode", type=str, default=DatasetArgs.mode)
     parser.add_argument("--subsample", type=int)
-    parser.add_argument("--no_cache", action="store_true")
-    parser.add_argument("--clear_cache", action="store_true")
+    parser.add_argument("--no_cache_dataset", action="store_true")
+    parser.add_argument("--no_cache_tokenizer", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
     if args.debug:
         debug()
-        sys.exit()
+        sys.exit(0)
 
     main(
-        PathArgs(args.root),
+        OutputManager(),
         TokenizerArgs(
             args.model,
             args.model_max_length,
-            not args.no_cache,
-            args.clear_cache,
+            not args.no_cache_tokenizer,
         ),
         DatasetArgs(
             args.test_size,
-            not args.no_cache,
-            args.clear_cache,
+            not args.no_cache_dataset,
             args.subsample,
         ),
         args.pretrain,
         args.pseudosupervised,
         args.unsupervised,
     )
+
+
+if __name__ == "__main__":
+    cli()

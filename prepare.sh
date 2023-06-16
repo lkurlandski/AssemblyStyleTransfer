@@ -14,13 +14,13 @@
 #SBATCH --ntasks=1			# How many tasks per node
 #SBATCH --cpus-per-task=1		# Number of CPUs per task
 
-/home/lk3591/anaconda3/envs/AssemblyStyleTransfer/bin/python \
-prepare.py \
---root=./data \
---chop \
---n_files=10000 \
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate HMCST
+python prepare.py \
+--all \
+--clean_all \
+--remove_all \
+--n_files=1000 \
 --max_len=1000000 \
---posix \
---mal_threshold=0.25 \
---ben_threshold=-0.25 
+--posix
 

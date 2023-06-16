@@ -18,16 +18,18 @@ from transformers import (
 )
 
 import preprocess
+from preprocess import DatasetArgs, TokenizerArgs
+from utils import OutputManager
 
 
-ENCODER_PATH = Path("./models/encoder")
-DECODER_PATH = Path("./models/decoder")
+PER_DEVICE_TRAIN_BATCH_SIZE = 1
+PER_DEVICE_EVAL_BATCH_SIZE = 1
 
 
 def train_mlm_encoder(
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path = ENCODER_PATH,
+    output_dir: Path,
     overwrite_output_dir: bool = False,
 ) -> PreTrainedModel:
     config = transformers.BertConfig(
@@ -52,8 +54,8 @@ def train_mlm_encoder(
         do_eval=True,
         optim="adamw_torch",
         evaluation_strategy="epoch",
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
         save_total_limit=3,
         num_train_epochs=2,
         fp16=True,
@@ -76,7 +78,7 @@ def train_mlm_encoder(
 def train_clm_decoder(
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path = DECODER_PATH,
+    output_dir: Path,
     overwrite_output_dir: bool = False,
 ) -> PreTrainedModel:
     config = transformers.GPT2Config(
@@ -99,8 +101,8 @@ def train_clm_decoder(
         do_eval=True,
         optim="adamw_torch",
         evaluation_strategy="epoch",
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
         save_total_limit=3,
         num_train_epochs=2,
         fp16=True,
@@ -122,36 +124,33 @@ def train_clm_decoder(
 
 
 def main(
-    paths: preprocess.PathArgs,
-    token_args: preprocess.TokenizerArgs,
+    paths: OutputManager,
+    token_args: TokenizerArgs,
     tr_encoder: bool,
     tr_decoder: bool,
 ) -> None:
-    fast_tokenizer, split_tokenized_dataset = preprocess.main(
-        paths, token_args, preprocess.DatasetArgs(), pretrain=True
-    )
+    fast_tokenizer, split_tokenized_dataset = preprocess.main(paths, token_args, DatasetArgs(), pretrain=True)
     print(f"{fast_tokenizer=}", flush=True)
     print(f"{split_tokenized_dataset=}", flush=True)
 
     if tr_encoder:
-        encoder = train_mlm_encoder(split_tokenized_dataset, fast_tokenizer)
+        encoder = train_mlm_encoder(split_tokenized_dataset, fast_tokenizer, paths.encoder, True)
         print(f"{encoder=}", flush=True)
     if tr_decoder:
-        decoder = train_clm_decoder(split_tokenized_dataset, fast_tokenizer)
+        decoder = train_clm_decoder(split_tokenized_dataset, fast_tokenizer, paths.decoder, True)
         print(f"{decoder=}", flush=True)
 
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Your program description.")
-    parser.add_argument("--root", type=Path, help="Path")
     parser.add_argument("--model", default=preprocess.TokenizerArgs.model, type=str)
     parser.add_argument("--tr_encoder", action="store_true")
     parser.add_argument("--tr_decoder", action="store_true")
     args = parser.parse_args()
 
     main(
-        preprocess.PathArgs(args.root),
-        preprocess.TokenizerArgs(args.model),
+        OutputManager(),
+        TokenizerArgs(args.model),
         args.tr_encoder,
         args.tr_decoder,
     )

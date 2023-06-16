@@ -17,12 +17,11 @@
 ## TODO
 
 - New organization:
-	- prepare: contains the download, filter, etc.
-	- data: contains data loading and processing
+    - data:
+    - data_seq2seq:
 	- tokenize: train a tokenizer
 	- pretrain: self-supervised training
 	- explain: 
-	- chop: create malicious and benign split
 	- train: supervised training
 
 - Create one consolidated Paths class

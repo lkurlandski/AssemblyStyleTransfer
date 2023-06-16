@@ -139,3 +139,48 @@ def convert_size(size: tp.Union[int, float, str]) -> tp.Union[float, str]:
 
 def files_in_dir(path: Path) -> int:
     return sum(1 for _ in path.iterdir())
+
+
+class OutputManager:
+    root: Path
+    download: Path = Path("download")
+    extract: Path = Path("extract")
+    unpack: Path = Path("unpack")
+    filter: Path = Path("filter")
+    parse: Path = Path("parse")
+    disassemble: Path = Path("disassemble")
+    snippets: Path = Path("snippets")
+    snippets_mal: Path = Path("mal")
+    snippets_ben: Path = Path("ben")
+    bounds_file: Path = Path("bounds.csv")
+    summary_file: Path = Path("summary.json")
+    tokenizers: Path = Path("tokenizers")
+    models: Path = Path("models")
+    encoder: Path = Path("encoder")
+    decoder: Path = Path("decoder")
+    pseudo_supervised = Path("pseudo_supervised")
+
+    def __init__(self, root: Path = ".") -> None:
+        self.root = Path(root)
+        self.data = self.root / "data"
+        self.output = self.root / "output"
+
+        self.download = self.data / "download"
+        self.extract = self.data / "extract"
+        self.unpack = self.data / "unpack"
+        self.filter = self.data / "filter"
+        self.parse = self.data / "parse"
+        self.disassemble = self.data / "disassemble"
+        self.snippets = self.data / "snippets"
+        self.snippets_mal = self.snippets / "mal"
+        self.snippets_ben = self.snippets / "ben"
+
+        self.bounds_file = self.output / "bounds.csv"
+        self.summary_file = self.output / "summary.json"
+        self.tokenizers = self.output / "tokenizers"
+        self.models = self.output / "models"
+        self.encoder = self.models / "encoder"
+        self.decoder = self.models / "decoder"
+        self.pseudo_supervised = self.models / "pseudo_supervised"
+        self.supervised = self.models / "supervised"
+        self.unsupervised = self.models / "unsupervised"

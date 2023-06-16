@@ -30,12 +30,14 @@ from transformers import (
 
 import cfg
 import preprocess
-import pretrain
-import utils
+from utils import (
+    get_highest_path,
+    OutputManager,
+)
 
 
-SUPERVISED_PATH = Path("./models/seq2seq/supervised")
-UNSUPERVISED_PATH = Path("./models/seq2seq/unsupervised")
+PER_DEVICE_TRAIN_BATCH_SIZE = 1
+PER_DEVICE_EVAL_BATCH_SIZE = 1
 
 
 class Direction(Enum):
@@ -48,17 +50,12 @@ def opposite_direction(direction: Direction):
 
 
 def build_seq2seq_model(
-    encoder_pretrained_path: Optional[Path] = None,
-    decoder_pretrained_path: Optional[Path] = None,
+    encoder_pretrained_path: Path,
+    decoder_pretrained_path: Path,
     bos_token_id: Optional[int] = None,
     eos_token_id: Optional[int] = None,
     pad_token_id: Optional[int] = None,
 ) -> PreTrainedModel:
-
-    if encoder_pretrained_path is None:
-        encoder_pretrained_path = utils.get_highest_path(pretrain.ENCODER_PATH, lstrip="checkpoint-")
-    if decoder_pretrained_path is None:
-        decoder_pretrained_path = utils.get_highest_path(pretrain.DECODER_PATH, lstrip="checkpoint-")
 
     # This will cause warnings that can be ignored because:
     # - the encoder was pretrained, so its head is not needed, so its head is removed.
@@ -76,24 +73,15 @@ def build_seq2seq_model(
 
 
 def train_unsupervised(
+    fw_seq2seq: PreTrainedModel,
+    bw_seq2seq: PreTrainedModel,
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    encoder_pretrained_path: Optional[Path] = None,
-    decoder_pretrained_path: Optional[Path] = None,
-    output_dir: Path = UNSUPERVISED_PATH,
+    output_dir: Path,
     overwrite_output_dir: bool = False,
     num_train_epochs: int = 1,
     generation_config: Optional[GenerationConfig] = None,
 ) -> PreTrainedModel:
-    def get_seq2seq() -> PreTrainedModel:
-        return build_seq2seq_model(
-            encoder_pretrained_path,
-            decoder_pretrained_path,
-            tokenizer.bos_token_id,
-            tokenizer.eos_token_id,
-            tokenizer.pad_token_id,
-        )
-
     def get_data_collator(seq2seq: PreTrainedModel) -> DataCollatorForSeq2Seq:
         return DataCollatorForSeq2Seq(
             tokenizer,
@@ -102,7 +90,9 @@ def train_unsupervised(
             padding="max_length",
         )
 
-    def get_training_args(output_dir: Path, epoch: int, direction: Direction) -> Seq2SeqTrainingArguments:
+    def get_training_args(
+        output_dir: Path, epoch: int, direction: Direction
+    ) -> Seq2SeqTrainingArguments:  # pylint: disable=unused-argument
         return Seq2SeqTrainingArguments(
             output_dir=output_dir.as_posix(),
             overwrite_output_dir=False,
@@ -110,8 +100,8 @@ def train_unsupervised(
             do_eval=True,
             optim="adamw_torch",
             evaluation_strategy="epoch",
-            per_device_train_batch_size=8,
-            per_device_eval_batch_size=8,
+            per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+            per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
             save_total_limit=3,
             num_train_epochs=1,
             fp16=True,
@@ -124,9 +114,9 @@ def train_unsupervised(
         data_collator: DataCollatorForSeq2Seq,
         train_dataset: Dataset,
         eval_dataset: Dataset,
-        epoch: int,  # pylint: disable=unused-argument
-        direction: Direction,  # pylint: disable=unused-argument
-    ) -> Seq2SeqTrainer:
+        epoch: int,
+        direction: Direction,
+    ) -> Seq2SeqTrainer:  # pylint: disable=unused-argument
         return Seq2SeqTrainer(
             model=seq2seq,
             args=training_args,
@@ -188,8 +178,8 @@ def train_unsupervised(
     fw_output_dir.mkdir(exist_ok=True)
     bw_output_dir.mkdir(exist_ok=True)
 
-    fw_seq2seq = get_seq2seq().to(cfg.DEVICE)
-    bw_seq2seq = get_seq2seq().to(cfg.DEVICE)
+    fw_seq2seq = fw_seq2seq.to(cfg.DEVICE)  # FIXME: distributed bug
+    bw_seq2seq = fw_seq2seq.to(cfg.DEVICE)
 
     print("Unsupervised Training...")
     for epoch in range(num_train_epochs):
@@ -198,23 +188,14 @@ def train_unsupervised(
 
 
 def train_supervised(
+    seq2seq: PreTrainedModel,
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    encoder_pretrained_path: Path = None,
-    decoder_pretrained_path: Path = None,
-    output_dir: Path = SUPERVISED_PATH,
+    output_dir: Path,
     overwrite_output_dir: bool = False,
     num_train_epochs: int = 1,
 ) -> PreTrainedModel:
     output_dir.mkdir(exist_ok=True, parents=True)
-
-    seq2seq = build_seq2seq_model(
-        encoder_pretrained_path,
-        decoder_pretrained_path,
-        tokenizer.bos_token_id,
-        tokenizer.eos_token_id,
-        tokenizer.pad_token_id,
-    )
 
     data_collator = transformers.DataCollatorForSeq2Seq(
         tokenizer,
@@ -230,8 +211,8 @@ def train_supervised(
         do_eval=True,
         optim="adamw_torch",
         evaluation_strategy="epoch",
-        per_device_train_batch_size=8,
-        per_device_eval_batch_size=8,
+        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
+        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
         save_total_limit=3,
         num_train_epochs=num_train_epochs,
         fp16=True,
@@ -253,7 +234,7 @@ def train_supervised(
 
 
 def main(
-    paths: preprocess.PathArgs,
+    paths: OutputManager,
     token_args: preprocess.TokenizerArgs,
     supervised: bool = False,
     unsupervised: bool = False,
@@ -273,26 +254,34 @@ def main(
     print(f"{tokenizer=}", flush=True)
     print(f"{dataset=}", flush=True)
 
+    def seq2seq() -> PreTrainedModel:
+        return build_seq2seq_model(
+            get_highest_path(paths.encoder, lstrip="checkpoint-"),
+            get_highest_path(paths.decoder, lstrip="checkpoint-"),
+            tokenizer.bos_token_id,
+            tokenizer.eos_token_id,
+            tokenizer.pad_token_id,
+        )
+
     if supervised:
-        return train_supervised(dataset, tokenizer)
+        return train_supervised(seq2seq(), dataset, tokenizer, paths.pseudo_supervised)
     if unsupervised:
-        return train_unsupervised(dataset, tokenizer, num_train_epochs=4)
+        return train_unsupervised(seq2seq(), seq2seq(), dataset, tokenizer, paths.unsupervised)
 
     raise Exception("This should never happen.")
 
 
 def debug() -> None:
     main(
-        preprocess.PathArgs("./data"),
+        OutputManager(),
         preprocess.TokenizerArgs(),
-        False,
         True,
+        False,
     )
 
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Your program description.")
-    parser.add_argument("--root", type=Path)
     parser.add_argument("--supervised", action="store_true")
     parser.add_argument("--unsupervised", action="store_true")
     parser.add_argument("--model", default=preprocess.TokenizerArgs.model, type=str)
@@ -305,7 +294,7 @@ if __name__ == "__main__":
         sys.exit(0)
 
     main(
-        preprocess.PathArgs(args.root),
+        OutputManager(),
         preprocess.TokenizerArgs(args.model),
         args.supervised,
         args.unsupervised,

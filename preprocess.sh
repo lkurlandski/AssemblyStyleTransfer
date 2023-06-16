@@ -15,8 +15,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=16G
 
-/home/lk3591/anaconda3/envs/AssemblyStyleTransfer/bin/python \
-pretrain.py \
---root="./data" \
---model="WordLevel"
+source ~/anaconda3/etc/profile.d/conda.sh
+conda activate HMCST
+python preprocess.py --pretrain --no_cache
+python preprocess.py --unsupervised
 

@@ -27,61 +27,11 @@ from utils import (
     maybe_remove,
     read_file,
     verify_text_section_bounds,
+    OutputManager,
 )
 
 
-def chop_snippets(
-    files: Collection[Path],
-    mal_path: Path,
-    ben_path: Path,
-    summary_file: Path,
-    ben_threshold: float,
-    mal_threshold: float,
-) -> None:
-    print("Chopping...", flush=True)
-
-    def get_outpath(f: Path, a: float, i: int) -> tp.Optional[Path]:
-        if a < ben_threshold:
-            return (ben_path / f"{f.stem}_{i}").with_suffix(".asm")
-        if a > mal_threshold:
-            return (mal_path / f"{f.stem}_{i}").with_suffix(".asm")
-        return None
-
-    def write_snippet(outfile: Path, snippet: list[str]) -> None:
-        with open(outfile, "w", encoding="utf-8") as handle_out:
-            handle_out.write("\n".join(snippet))
-
-    with open(summary_file, encoding="utf-8") as handle:
-        summary = {Path(f).name: v for f, v in json.load(handle).items()}
-
-    for f in files:
-        if (key := f.with_suffix(".exe").name) not in summary:
-            warnings.warn(f"Found disassembly for {f.name}, but have no attributions for it.")
-            continue
-        offsets, attribs = list(zip(*summary[key]))
-        i, snippet = 0, []
-
-        with open(f, encoding="utf-8") as handle_in:
-            for line in handle_in:
-                if line == "\n":
-                    break
-                offset, instruction = line.rstrip().split("\t")
-                snippet.append(f"{offset}\t{instruction}")
-
-                if i < len(offsets) - 1 and int(offset, 16) >= offsets[i + 1]:
-                    outfile = get_outpath(f, attribs[i], i)
-                    if outfile is not None:
-                        write_snippet(outfile, snippet)
-                    i += 1
-                    snippet = []
-
-            if snippet:
-                outfile = get_outpath(f, attribs[i], i)
-                if outfile is not None:
-                    write_snippet(outfile, snippet)
-
-
-def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool, remove: bool) -> None:
+def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool) -> None:
     print("Disassembling...", flush=True)
 
     def format_fn(ins):
@@ -107,12 +57,6 @@ def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, add
 
             with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
                 handle_.write("\n".join(instructions) + "\n")
-
-            maybe_remove(f, remove)
-
-    if remove:
-        for f in files:
-            f.unlink()
 
 
 def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bool, remove: bool) -> None:
@@ -226,38 +170,7 @@ class ParamArgs:
     n_files: int = 10
     max_len: int = 16e6
     posix: bool = False
-    mal_threshold: float = 0.5
-    ben_threshold: float = -0.5
     address: bool = True
-
-
-@dataclass
-class PathArgs:
-    root: Path
-    download: Path = Path("download")
-    extract: Path = Path("extract")
-    unpack: Path = Path("unpack")
-    filter: Path = Path("filter")
-    parse: Path = Path("parse")
-    disassemble: Path = Path("disassemble")
-    snippets: Path = Path("snippets")
-    snippets_mal: Path = Path("mal")
-    snippets_ben: Path = Path("ben")
-    bounds_file: Path = Path("bounds.csv")
-    summary_file: Path = Path("summary.json")
-
-    def __post_init__(self) -> None:
-        self.download = self.root / self.download
-        self.extract = self.root / self.extract
-        self.unpack = self.root / self.unpack
-        self.filter = self.root / self.filter
-        self.parse = self.root / self.parse
-        self.disassemble = self.root / self.disassemble
-        self.snippets = self.root / self.snippets
-        self.snippets_mal = self.snippets / "mal"
-        self.snippets_ben = self.snippets / "ben"
-        self.bounds_file = self.root / self.bounds_file
-        self.summary_file = self.root / self.summary_file
 
 
 @dataclass
@@ -268,16 +181,6 @@ class ActionArgs:
     filter: bool = False
     parse: bool = False
     disassemble: bool = False
-    chop: bool = False
-
-
-@dataclass
-class RemoveArgs:
-    download: bool = False
-    extract: bool = False
-    unpack: bool = False
-    filter: bool = False
-    parse: bool = False
 
 
 @dataclass
@@ -288,16 +191,24 @@ class CleanArgs:
     filter: bool = False
     parse: bool = False
     disassemble: bool = False
-    chop: bool = False
+
+
+@dataclass
+class RemoveArgs:
+    download: bool = False
+    extract: bool = False
+    unpack: bool = False
+    filter: bool = False
 
 
 def main(
     params: ParamArgs,
-    paths: PathArgs,
+    paths: OutputManager,
     actions: ActionArgs,
     removes: RemoveArgs,
     clean: CleanArgs,
 ) -> None:
+    # TODO: refactor into OutputManager
     if clean.download:
         shutil.rmtree(paths.download, ignore_errors=True)
     if clean.extract:
@@ -311,8 +222,6 @@ def main(
         shutil.rmtree(paths.parse, ignore_errors=True)
     if clean.disassemble:
         shutil.rmtree(paths.disassemble, ignore_errors=True)
-    if clean.chop:
-        shutil.rmtree(paths.snippets, ignore_errors=True)
 
     paths.root.mkdir(exist_ok=True, parents=True)
 
@@ -346,27 +255,14 @@ def main(
 
     if actions.disassemble:
         paths.disassemble.mkdir(exist_ok=True)
-        disassemble(list(paths.parse.iterdir()), paths.disassemble, paths.bounds_file, params.address, removes.parse)
-
-    if actions.chop:
-        paths.snippets.mkdir(exist_ok=True)
-        paths.snippets_mal.mkdir(exist_ok=True)
-        paths.snippets_ben.mkdir(exist_ok=True)
-        chop_snippets(
-            list(paths.disassemble.iterdir()),
-            paths.snippets_mal,
-            paths.snippets_ben,
-            paths.summary_file,
-            params.ben_threshold,
-            params.mal_threshold,
-        )
+        disassemble(list(paths.parse.iterdir()), paths.disassemble, paths.bounds_file, params.address)
 
 
 def debug() -> None:
     main(
         params=ParamArgs(),
-        paths=PathArgs(Path("./data")),
-        actions=ActionArgs(parse=True),
+        paths=OutputManager(),
+        actions=ActionArgs(),
         removes=RemoveArgs(),
         clean=CleanArgs(),
     )
@@ -377,37 +273,32 @@ def cli() -> None:
 
     parser.add_argument("--debug", action="store_true", help="DEBUG")
 
-    parser.add_argument("--root", type=Path, help="Path")
-
+    parser.add_argument("--all", action="store_true", help="ACTION")
     parser.add_argument("--download", action="store_true", help="ACTION")
     parser.add_argument("--extract", action="store_true", help="ACTION")
     parser.add_argument("--unpack", action="store_true", help="ACTION")
     parser.add_argument("--filter", action="store_true", help="ACTION")
     parser.add_argument("--parse", action="store_true", help="ACTION")
-    parser.add_argument("--explain", action="store_true", help="ACTION")
     parser.add_argument("--disassemble", action="store_true", help="ACTION")
-    parser.add_argument("--chop", action="store_true", help="ACTION")
 
     parser.add_argument("--n_files", type=int, default=ParamArgs.n_files, help="PARAM")
     parser.add_argument("--max_len", type=int, default=ParamArgs.max_len, help="PARAM")
     parser.add_argument("--posix", action="store_true", help="PARAM")
-    parser.add_argument("--mal_threshold", type=float, default=ParamArgs.mal_threshold, help="PARAM")
-    parser.add_argument("--ben_threshold", type=float, default=ParamArgs.ben_threshold, help="PARAM")
     parser.add_argument("--no_address", action="store_true", help="PARAM")
 
-    parser.add_argument("--remove_download", action="store_true", help="REMOVE-AFTER")
-    parser.add_argument("--remove_extract", action="store_true", help="REMOVE-AFTER")
-    parser.add_argument("--remove_unpack", action="store_true", help="REMOVE-AFTER")
-    parser.add_argument("--remove_filter", action="store_true", help="REMOVE-AFTER")
-    parser.add_argument("--remove_parse", action="store_true", help="REMOVE-AFTER")
-
+    parser.add_argument("--clean_all", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_download", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_extract", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_unpack", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_filter", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_parse", action="store_true", help="CLEAN-BEFORE")
     parser.add_argument("--clean_disassemble", action="store_true", help="CLEAN-BEFORE")
-    parser.add_argument("--clean_chop", action="store_true", help="CLEAN-BEFORE")
+
+    parser.add_argument("--remove_all", action="store_true", help="REMOVE-AFTER")
+    parser.add_argument("--remove_download", action="store_true", help="REMOVE-AFTER")
+    parser.add_argument("--remove_extract", action="store_true", help="REMOVE-AFTER")
+    parser.add_argument("--remove_unpack", action="store_true", help="REMOVE-AFTER")
+    parser.add_argument("--remove_filter", action="store_true", help="REMOVE-AFTER")
 
     args = parser.parse_args()
 
@@ -420,37 +311,30 @@ def cli() -> None:
             args.n_files,
             args.max_len,
             args.posix,
-            args.mal_threshold,
-            args.ben_threshold,
             not args.no_address,
         ),
-        paths=PathArgs(
-            args.root,
-        ),
+        paths=OutputManager(),
         actions=ActionArgs(
-            args.download,
-            args.extract,
-            args.unpack,
-            args.filter,
-            args.parse,
-            args.disassemble,
-            args.chop,
+            args.download or args.all,
+            args.extract or args.all,
+            args.unpack or args.all,
+            args.filter or args.all,
+            args.parse or args.all,
+            args.disassemble or args.all,
         ),
         removes=RemoveArgs(
-            args.remove_download,
-            args.remove_extract,
-            args.remove_unpack,
-            args.remove_filter,
-            args.remove_parse,
+            args.remove_download or args.remove_all,
+            args.remove_extract or args.remove_all,
+            args.remove_unpack or args.remove_all,
+            args.remove_filter or args.remove_all,
         ),
         clean=CleanArgs(
-            args.clean_download,
-            args.clean_extract,
-            args.clean_unpack,
-            args.clean_filter,
-            args.clean_parse,
-            args.clean_disassemble,
-            args.clean_chop,
+            args.clean_download or args.clean_all,
+            args.clean_extract or args.clean_all,
+            args.clean_unpack or args.clean_all,
+            args.clean_filter or args.clean_all,
+            args.clean_parse or args.clean_all,
+            args.clean_disassemble or args.clean_all,
         ),
     )
 
