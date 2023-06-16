@@ -362,8 +362,20 @@ def main(
         )
 
 
-if __name__ == "__main__":
+def debug() -> None:
+    main(
+        params=ParamArgs(),
+        paths=PathArgs(Path("./data")),
+        actions=ActionArgs(parse=True),
+        removes=RemoveArgs(),
+        clean=CleanArgs(),
+    )
+
+
+def cli() -> None:
     parser = ArgumentParser()
+
+    parser.add_argument("--debug", action="store_true", help="DEBUG")
 
     parser.add_argument("--root", type=Path, help="Path")
 
@@ -398,6 +410,10 @@ if __name__ == "__main__":
     parser.add_argument("--clean_chop", action="store_true", help="CLEAN-BEFORE")
 
     args = parser.parse_args()
+
+    if args.debug:
+        debug()
+        return
 
     main(
         params=ParamArgs(
@@ -437,3 +453,7 @@ if __name__ == "__main__":
             args.clean_chop,
         ),
     )
+
+
+if __name__ == "__main__":
+    cli()

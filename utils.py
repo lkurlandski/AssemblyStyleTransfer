@@ -53,6 +53,11 @@ def get_text_section_bounds(f: Path, errors: str = "raise") -> tp.Tuple[int, int
             raise e
         return None
 
+    if not pe.FILE_HEADER.IMAGE_FILE_32BIT_MACHINE:  # filter non-x86 binaries
+        return None
+    if pe.FILE_HEADER.Machine == 0:  # unknown machine
+        pass
+
     for section in pe.sections:
         if ".text" in section.Name.decode("utf-8", errors="ignore"):
             lower = section.PointerToRawData
