@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from itertools import cycle, islice, tee, zip_longest
 from pathlib import Path
 import re
+import sys
 import typing as tp
 
 from datasets import Dataset, DatasetDict
@@ -64,7 +65,7 @@ def get_tokenizer(
 
     if path is not None and path.exists() and cache:
         print(f"Using tokenizer from {path.as_posix()}")
-        tokenizer = Tokenizer.from_file(path.as_posix())
+        tokenizer: Tokenizer = Tokenizer.from_file(path.as_posix())
         tokenizer.post_processor = post_processor
         return tokenizer
 
@@ -139,7 +140,7 @@ def get_pretrained_tokenizer_specific(
     config: PretrainedConfig,
 ) -> PreTrainedTokenizerFast | PreTrainedTokenizer:
     raise NotImplementedError()
-    if isinstance(config, transformers.BertConfig):
+    if isinstance(config, transformers.BertConfig):  # pylint: disable=unreachable
         return transformers.BertTokenizerFast(
             tokenizer_file=tokenizer_file,
             do_lower_case=False,
@@ -150,7 +151,7 @@ def get_pretrained_tokenizer_specific(
             mask_token=cfg.MSK,
             tokenize_chinese_chars=False,
             strip_accents=False,
-            wordpieces_prefix="##",  # TODO
+            wordpieces_prefix="##",
         )
     raise NotImplementedError()
 
@@ -187,7 +188,7 @@ def get_processed_pretraining_dataset(
     return tokenized_dataset
 
 
-def get_seq2seq_dataset(
+def get_unsupervised_dataset(
     mal_files: Collection[Path],
     ben_files: Collection[Path],
     mode: tp.Literal["min", "repeat", "empty"],
@@ -216,18 +217,32 @@ def get_seq2seq_dataset(
     return dataset
 
 
-def get_processed_seq2seq_dataset(
+def get_processed_pseudosupervised_dataset(
     dataset: Dataset = None,
     tokenizer: PreTrainedTokenizerFast = None,
     load_from_cache_file: bool = True,
     **kwargs,
 ) -> Dataset:
-    """
-    Suggested kwargs include: `max_length`, `padding`, `truncation`
-    """
-
     def fn(batch):
         return tokenizer(text=batch["mal"], text_target=batch["ben"], **kwargs)
+
+    tokenized_dataset = dataset.map(fn, batched=True, load_from_cache_file=load_from_cache_file)
+    return tokenized_dataset
+
+
+def get_processed_unsupervised_dataset(
+    dataset: Dataset = None,
+    tokenizer: PreTrainedTokenizerFast = None,
+    load_from_cache_file: bool = True,
+    **kwargs,
+) -> Dataset:
+    def fn(batch):
+        batch_encoding = tokenizer(text=batch["mal"], text_target=batch["ben"], **kwargs)
+        batch_encoding = {f"fw_{k}": v for k, v in batch_encoding.items()}
+        bw_batch_encoding = tokenizer(text=batch["ben"], text_target=batch["mal"], **kwargs)
+        bw_batch_encoding = {f"bw_{k}": v for k, v in bw_batch_encoding.items()}
+        batch_encoding.update(bw_batch_encoding)
+        return batch_encoding
 
     tokenized_dataset = dataset.map(fn, batched=True, load_from_cache_file=load_from_cache_file)
     return tokenized_dataset
@@ -272,13 +287,12 @@ def main(
     token_args: TokenizerArgs,
     data_args: DatasetArgs,
     pretrain: bool = False,
-    seq2seq: bool = False,
+    pseudosupervised: bool = False,
+    unsupervised: bool = False,
 ) -> tuple[PreTrainedTokenizerFast, DatasetDict]:
     """Get the tokenizer and the pretraining or seq2seq dataset."""
-    if not pretrain and not seq2seq:
-        raise ValueError("Either pretrain or seq2seq must be True.")
-    if pretrain and seq2seq:
-        raise ValueError("Only one of pretrain or seq2seq can be True.")
+    actions = (pretrain, pseudosupervised, unsupervised)
+    assert any(set(actions)) and not all(set(actions)), "Exactly one action must be selected."
 
     files = [p for p in paths.disassemble.iterdir() if p.suffix == ".asm"]
     print(f"Found {round(utils.mem(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
@@ -300,7 +314,7 @@ def main(
     fast_tokenizer = get_pretrained_tokenizer(tokenizer, model_max_length=token_args.model_max_length)
     print(f"{fast_tokenizer=}", flush=True)
 
-    if not seq2seq:
+    if pretrain:
         print("Tokenizing pretraining dataset...", flush=True)
         tokenized_dataset = get_processed_pretraining_dataset(
             dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
@@ -317,22 +331,35 @@ def main(
 
         return fast_tokenizer, split_tokenized_dataset
 
+    if pseudosupervised:
+        pass
+
+    if unsupervised:
+        pass
+
     mal_files = [p for p in paths.snippets_mal.iterdir() if p.suffix == ".asm"]
     ben_files = [p for p in paths.snippets_ben.iterdir() if p.suffix == ".asm"]
     print(f"Found {round(utils.mem(mal_files), 1)}G of mal_files in {paths.snippets_mal.as_posix()}", flush=True)
     print(f"Found {round(utils.mem(ben_files), 1)}G of mal_files in {paths.snippets_ben.as_posix()}", flush=True)
     print("Getting seq2seq dataset...", flush=True)
-    dataset = get_seq2seq_dataset(mal_files, ben_files, data_args.mode)
+    dataset = get_unsupervised_dataset(mal_files, ben_files, data_args.mode)
     if data_args.clear_cache:
         dataset.cleanup_cache_files()
     if data_args.subsample is not None:
         dataset = dataset.select(range(data_args.subsample))
     print(f"{dataset=}", flush=True)
 
-    print("Tokenizing seq2seq dataset...", flush=True)
-    tokenized_dataset = get_processed_seq2seq_dataset(
-        dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
-    )
+    if pseudosupervised:
+        print("Tokenizing pseudosupervised dataset...", flush=True)
+        tokenized_dataset = get_processed_unsupervised_dataset(
+            dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
+        )
+    elif unsupervised:
+        print("Tokenizing unsupervised dataset...", flush=True)
+        tokenized_dataset = get_processed_unsupervised_dataset(
+            dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
+        )
+
     if data_args.clear_cache:
         tokenized_dataset.cleanup_cache_files()
     print(f"{tokenized_dataset=}", flush=True)
@@ -346,12 +373,23 @@ def main(
     return fast_tokenizer, split_tokenized_dataset
 
 
+def debug():
+    main(
+        PathArgs("./data"),
+        TokenizerArgs(),
+        DatasetArgs(),
+        False,
+        True,
+    )
+
+
 if __name__ == "__main__":
     parser = ArgumentParser(description="Your program description.")
 
     parser.add_argument("--root", type=Path)
     parser.add_argument("--pretrain", action="store_true")
-    parser.add_argument("--seq2seq", action="store_true")
+    parser.add_argument("--pseudosupervised", action="store_true")
+    parser.add_argument("--unsupervised", action="store_true")
     parser.add_argument("--model", default=TokenizerArgs.model, type=str)
     parser.add_argument("--model_max_length", type=int, default=256)
     parser.add_argument("--test_size", type=float, default=DatasetArgs.test_size)
@@ -359,7 +397,12 @@ if __name__ == "__main__":
     parser.add_argument("--subsample", type=int)
     parser.add_argument("--no_cache", action="store_true")
     parser.add_argument("--clear_cache", action="store_true")
+    parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+
+    if args.debug:
+        debug()
+        sys.exit()
 
     main(
         PathArgs(args.root),
@@ -376,5 +419,6 @@ if __name__ == "__main__":
             args.subsample,
         ),
         args.pretrain,
-        args.seq2seq,
+        args.pseudosupervised,
+        args.unsupervised,
     )

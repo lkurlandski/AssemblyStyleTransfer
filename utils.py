@@ -20,7 +20,7 @@ def get_highest_path(
         files = Path(path_or_files).iterdir()
     else:
         files = path_or_files
-    return list(sorted(files, key=lambda p: int(p.stem.lstrip(lstrip).rstrip())))[-1]
+    return list(sorted(files, key=lambda p: int(p.stem.lstrip(lstrip).rstrip(rstrip))))[-1]
 
 
 def mem(path_or_files: Collection[Path] | Path) -> float:
@@ -77,8 +77,10 @@ def disasm(md: capstone.Cs, code: bytes, format_fn: tp.Callable = tuple, start: 
 
 def read_file(file: Path, l: tp.Optional[int] = None, u: tp.Optional[int] = None) -> bytes:
     with open(file, "rb", encoding=None) as handle:
-        handle.seek(l)
-        binary = handle.read(u)
+        if l:
+            handle.seek(l, 0)
+        size = u - l if u else None
+        binary = handle.read(size)
     return binary
 
 

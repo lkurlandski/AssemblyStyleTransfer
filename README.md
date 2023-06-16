@@ -24,3 +24,5 @@
 	- explain: 
 	- chop: create malicious and benign split
 	- train: supervised training
+
+- Create one consolidated Paths class
