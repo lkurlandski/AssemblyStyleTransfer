@@ -20,7 +20,14 @@ import capstone
 from tqdm import tqdm
 
 import cfg
-from utils import disasm, instruction_as_str, get_text_section_bounds, read_file
+from utils import (
+    disasm,
+    instruction_as_str,
+    get_text_section_bounds,
+    maybe_remove,
+    read_file,
+    verify_text_section_bounds,
+)
 
 
 def chop_snippets(
@@ -74,11 +81,11 @@ def chop_snippets(
                     write_snippet(outfile, snippet)
 
 
-def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, remove: bool) -> None:
+def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool, remove: bool) -> None:
     print("Disassembling...", flush=True)
 
     def format_fn(ins):
-        return instruction_as_str(ins, address=True)
+        return instruction_as_str(ins, address=address)
 
     md = capstone.Cs(cfg.ARCH, cfg.MODE)
 
@@ -101,8 +108,7 @@ def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, rem
             with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
                 handle_.write("\n".join(instructions) + "\n")
 
-            if remove:
-                f.unlink()
+            maybe_remove(f, remove)
 
     if remove:
         for f in files:
@@ -117,16 +123,17 @@ def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bo
         writer.writerow(["file", "lower", "upper", "size"])
         for f in tqdm(files):
             if (o := get_text_section_bounds(f, errors="quiet")) is None:
-                if remove:
-                    f.unlink()
+                maybe_remove(f, remove)
                 continue
             l, u = o
+            if verify_text_section_bounds(f, l, u, False) != 0:
+                maybe_remove(f, remove)
+                continue
             f_out = dest_path / f.name
             shutil.copy(f, f_out)
             name = f_out.as_posix() if posix else f_out.name
             writer.writerow([name, l, u, f_out.stat().st_size])
-            if remove:
-                f.unlink()
+            maybe_remove(f, remove)
         handle.write("\n")
 
 
@@ -142,8 +149,7 @@ def filter_(files: Collection[Path], dest_path: Path, max_len: int, remove: bool
 
     for f in tqdm(files):
         if not fn(f):
-            if remove:
-                f.unlink()
+            maybe_remove(f, remove)
             continue
         if remove:
             f.rename(dest_path / f.name)
@@ -168,8 +174,7 @@ def unpack(files: Collection[Path], dest_path: Path, remove: bool) -> None:
         else:
             warnings.warn(result)
 
-        if remove:
-            f.unlink()
+        maybe_remove(f, remove)
 
 
 def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
@@ -182,8 +187,7 @@ def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
             extracted = zlib.decompress(handle.read())
         with open((dest_path / f.name).with_suffix(".exe"), "wb") as handle:
             handle.write(extracted)
-        if remove:
-            f.unlink()
+        maybe_remove(f, remove)
 
 
 def download(dest_path: Path, n_files: int) -> None:
@@ -224,6 +228,7 @@ class ParamArgs:
     posix: bool = False
     mal_threshold: float = 0.5
     ben_threshold: float = -0.5
+    address: bool = True
 
 
 @dataclass
@@ -341,7 +346,7 @@ def main(
 
     if actions.disassemble:
         paths.disassemble.mkdir(exist_ok=True)
-        disassemble(list(paths.parse.iterdir()), paths.disassemble, paths.bounds_file, removes.parse)
+        disassemble(list(paths.parse.iterdir()), paths.disassemble, paths.bounds_file, params.address, removes.parse)
 
     if actions.chop:
         paths.snippets.mkdir(exist_ok=True)
@@ -376,6 +381,7 @@ if __name__ == "__main__":
     parser.add_argument("--posix", action="store_true", help="PARAM")
     parser.add_argument("--mal_threshold", type=float, default=ParamArgs.mal_threshold, help="PARAM")
     parser.add_argument("--ben_threshold", type=float, default=ParamArgs.ben_threshold, help="PARAM")
+    parser.add_argument("--no_address", action="store_true", help="PARAM")
 
     parser.add_argument("--remove_download", action="store_true", help="REMOVE-AFTER")
     parser.add_argument("--remove_extract", action="store_true", help="REMOVE-AFTER")
@@ -400,6 +406,7 @@ if __name__ == "__main__":
             args.posix,
             args.mal_threshold,
             args.ben_threshold,
+            not args.no_address,
         ),
         paths=PathArgs(
             args.root,
