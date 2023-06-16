@@ -75,12 +75,22 @@ def disasm(md: capstone.Cs, code: bytes, format_fn: tp.Callable = tuple, start: 
     return [format_fn(i) for i in md.disasm_lite(code, start)]
 
 
-def read_file(file: Path, l: tp.Optional[int] = None, u: tp.Optional[int] = None) -> bytes:
+def read_file(file: Path, l: int = 0, u: tp.Optional[int] = None) -> bytes:
+    st_size = file.stat().st_size
+    u = st_size - 1 if u is None else u
+
+    if st_size == 0:
+        raise ValueError(f"File {file} is empty.")
+    if l >= st_size:
+        raise ValueError(f"Lower bound {l} is greater than file size {st_size}.")
+    if u >= st_size:
+        raise ValueError(f"Upper bound {u} is greater than file size {st_size}.")
+    if u - l < 1:
+        raise ValueError(f"Upper bound {u} is less or equal than lower bound {l}.")
+
     with open(file, "rb", encoding=None) as handle:
-        if l:
-            handle.seek(l, 0)
-        size = u - l if u else None
-        binary = handle.read(size)
+        handle.seek(l, 0)
+        binary = handle.read(u - l)
     return binary
 
 
