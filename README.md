@@ -16,12 +16,6 @@
 
 ## TODO
 
-- New organization:
-    - data:
-    - data_seq2seq:
-	- tokenize: train a tokenizer
-	- pretrain: self-supervised training
-	- explain: 
-	- train: supervised training
-
-- Create one consolidated Paths class
+- Improve organization of preprocess script's main function.
+- CLI functions should print start, stop, and job info to facilitate cluster usage.
+- Improve logging and enable various log levels.

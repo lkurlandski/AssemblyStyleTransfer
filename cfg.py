@@ -7,6 +7,7 @@ import torch
 
 
 BUCKET = "s3://sorel-20m/09-DEC-2020/binaries/"
+WINDOWS_BUCKET = "lk3591@armitage.csec.rit.edu:/home/lk3591/Documents/datasets/Windows/extracted"
 UPX = "upx"
 AWS = "aws"
 ARCH = capstone.CS_ARCH_X86
@@ -24,3 +25,5 @@ STR = "<STR>"
 SPECIALS = [UNK, MSK, PAD, SEP, CLS, BOS, EOS, ADR, STR]
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+BATCH_BASE_A100 = 64

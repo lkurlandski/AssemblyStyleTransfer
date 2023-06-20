@@ -16,7 +16,8 @@
 #SBATCH --mem=16G
 
 source ~/anaconda3/etc/profile.d/conda.sh
-conda activate HMCST
-python preprocess.py --pretrain --no_cache
-python preprocess.py --unsupervised
+conda activate AssemblyStyleTransfer
+# python preprocess.py --no_cache_tokenizer
+python preprocess.py --pretrain --no_cache_dataset
+# python preprocess.py --unsupervised --no_cache_dataset
 

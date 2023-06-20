@@ -1,10 +1,15 @@
 """
 Training for seq2seq models.
+
+# TODO: try to optimize the generation process
+    - from optimum.bettertransformer import BetterTransformer
 """
 
 from argparse import ArgumentParser
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, field
 from enum import Enum
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -19,25 +24,33 @@ import transformers
 from transformers import (
     DataCollatorForSeq2Seq,
     GenerationConfig,
+    HfArgumentParser,
     PreTrainedModel,
     PreTrainedTokenizer,
     Seq2SeqTrainingArguments,
     Seq2SeqTrainer,
 )
 
-# TODO: try to optimize the generation process
-# from optimum.bettertransformer import BetterTransformer
-
 import cfg
 import preprocess
 from utils import (
+    estimate_memory_needs,
     get_highest_path,
+    get_num_workers,
+    message,
+    one_and_only_one,
     OutputManager,
 )
 
 
-PER_DEVICE_TRAIN_BATCH_SIZE = 1
-PER_DEVICE_EVAL_BATCH_SIZE = 1
+@dataclass
+class TrainArgs:
+    tokenizer: str = preprocess.TokenizerArgs.model
+    patience: int = 5
+    threshold: int = 0
+    mode: str = preprocess.DatasetArgs.mode
+    tr_supervised: bool = field(default=False, metadata={"help": "Whether to train the encoder."})
+    tr_unsupervised: bool = field(default=False, metadata={"help": "Whether to train the decoder."})
 
 
 class Direction(Enum):
@@ -56,7 +69,6 @@ def build_seq2seq_model(
     eos_token_id: Optional[int] = None,
     pad_token_id: Optional[int] = None,
 ) -> PreTrainedModel:
-
     # This will cause warnings that can be ignored because:
     # - the encoder was pretrained, so its head is not needed, so its head is removed.
     # - the decoder will have a new head attached to it, which initally contains random weights.
@@ -77,12 +89,12 @@ def train_unsupervised(
     bw_seq2seq: PreTrainedModel,
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path,
-    overwrite_output_dir: bool = False,
-    num_train_epochs: int = 1,
+    training_args: Seq2SeqTrainingArguments,
     generation_config: Optional[GenerationConfig] = None,
 ) -> PreTrainedModel:
-    def get_data_collator(seq2seq: PreTrainedModel) -> DataCollatorForSeq2Seq:
+    def get_single_run_data_collator(
+        seq2seq: PreTrainedModel, epoch: int, direction: Direction
+    ) -> DataCollatorForSeq2Seq:  # pylint: disable=unused-argument
         return DataCollatorForSeq2Seq(
             tokenizer,
             model=seq2seq,
@@ -90,25 +102,15 @@ def train_unsupervised(
             padding="max_length",
         )
 
-    def get_training_args(
+    def get_single_run_training_args(
         output_dir: Path, epoch: int, direction: Direction
     ) -> Seq2SeqTrainingArguments:  # pylint: disable=unused-argument
-        return Seq2SeqTrainingArguments(
-            output_dir=output_dir.as_posix(),
-            overwrite_output_dir=False,
-            do_train=True,
-            do_eval=True,
-            optim="adamw_torch",
-            evaluation_strategy="epoch",
-            per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-            per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-            save_total_limit=3,
-            num_train_epochs=1,
-            fp16=True,
-            push_to_hub=False,
-        )
+        training_args_ = deepcopy(training_args)
+        training_args_.num_train_epochs = 1
+        training_args_.output_dir = output_dir
+        return training_args_
 
-    def get_trainer(
+    def get_single_run_trainer(
         seq2seq: PreTrainedModel,
         training_args: Seq2SeqTrainingArguments,
         data_collator: DataCollatorForSeq2Seq,
@@ -132,19 +134,19 @@ def train_unsupervised(
         return dataset["train"].select_columns(list(columns.keys())).rename_columns(columns)
 
     def get_synthetic_dataset(generator: PreTrainedModel, direction: Direction) -> Dataset:
-        print(f"{generator=}\n{generator.device=}")
+        # print(f"{generator=}\n{generator.device=}", flush=True)
         dataset_for_generator = get_directional_dataset(opposite_direction(direction))
-        print(f"{dataset_for_generator=}")
+        # print(f"{dataset_for_generator=}", flush=True)
         inputs_for_generator = tensor(dataset_for_generator["input_ids"], device=generator.device)
-        print(f"{inputs_for_generator=}\n{inputs_for_generator.device=}")
+        # print(f"{inputs_for_generator=}\n{inputs_for_generator.device=}", flush=True)
         outputs = generator.generate(inputs_for_generator, generation_config)
-        print(f"{outputs=}")
+        # print(f"{outputs=}", flush=True)
         labels = Dataset.from_dict({"labels": outputs})
-        print(f"{labels=}")
+        # print(f"{labels=}", flush=True)
         dataset_for_learner = get_directional_dataset(direction).remove_columns("labels")
-        print(f"{dataset_for_learner=}")
+        # print(f"{dataset_for_learner=}", flush=True)
         dataset_for_learner = datasets.concatenate_datasets([dataset_for_learner, labels], axis=1)
-        print(f"{dataset_for_learner=}")
+        # print(f"{dataset_for_learner=}", flush=True)
         return dataset_for_learner
 
     def backtranslate(
@@ -154,11 +156,11 @@ def train_unsupervised(
         epoch: int,
         direction: Direction,
     ):
-        data_collator = get_data_collator(learner)
-        training_args = get_training_args(output_dir, epoch, direction)
+        data_collator = get_single_run_data_collator(learner, epoch, direction)
+        training_args = get_single_run_training_args(output_dir, epoch, direction)
         dataset = get_synthetic_dataset(generator, direction)
         dataset = dataset.train_test_split(test_size=0.1, load_from_cache_file=False)
-        trainer = get_trainer(
+        trainer = get_single_run_trainer(
             learner,
             training_args,
             data_collator,
@@ -169,56 +171,39 @@ def train_unsupervised(
         )
         trainer.train()
 
-    fw_output_dir = output_dir / Direction.FORWARD.value
-    bw_output_dir = output_dir / Direction.BACKWARD.value
-    if overwrite_output_dir:
+    fw_output_dir = training_args.output_dir / Direction.FORWARD.value
+    bw_output_dir = training_args.output_dir / Direction.BACKWARD.value
+    if training_args.overwrite_output_dir:
         shutil.rmtree(fw_output_dir, ignore_errors=True)
         shutil.rmtree(bw_output_dir, ignore_errors=True)
-    output_dir.mkdir(exist_ok=True, parents=True)
+    training_args.output_dir.mkdir(exist_ok=True, parents=True)
     fw_output_dir.mkdir(exist_ok=True)
     bw_output_dir.mkdir(exist_ok=True)
 
-    fw_seq2seq = fw_seq2seq.to(cfg.DEVICE)  # FIXME: distributed bug
+    fw_seq2seq = fw_seq2seq.to(cfg.DEVICE)  # FIXME: this will cause a bug when doing distributed training
     bw_seq2seq = fw_seq2seq.to(cfg.DEVICE)
 
-    print("Unsupervised Training...")
-    for epoch in range(num_train_epochs):
+    print("Unsupervised Training...", flush=True)
+    for epoch in range(int(training_args.num_train_epochs)):
         backtranslate(fw_seq2seq, bw_seq2seq, fw_output_dir, epoch, Direction.FORWARD)
         backtranslate(bw_seq2seq, fw_seq2seq, bw_output_dir, epoch, Direction.BACKWARD)
+        # TODO: implement early stopping
+
+    return fw_seq2seq
 
 
 def train_supervised(
     seq2seq: PreTrainedModel,
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path,
-    overwrite_output_dir: bool = False,
-    num_train_epochs: int = 1,
+    training_args: Seq2SeqTrainingArguments,
 ) -> PreTrainedModel:
-    output_dir.mkdir(exist_ok=True, parents=True)
-
     data_collator = transformers.DataCollatorForSeq2Seq(
         tokenizer,
         model=seq2seq,
         max_length=tokenizer.model_max_length,
         padding="max_length",
     )
-
-    training_args = transformers.Seq2SeqTrainingArguments(
-        output_dir=output_dir.as_posix(),
-        overwrite_output_dir=overwrite_output_dir,
-        do_train=True,
-        do_eval=True,
-        optim="adamw_torch",
-        evaluation_strategy="epoch",
-        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-        save_total_limit=3,
-        num_train_epochs=num_train_epochs,
-        fp16=True,
-        push_to_hub=False,
-    )
-
     trainer = transformers.Seq2SeqTrainer(
         model=seq2seq,
         args=training_args,
@@ -228,6 +213,7 @@ def train_supervised(
         tokenizer=tokenizer,
     )
 
+    print("Unsupervised Training...", flush=True)
     trainer.train()
 
     return seq2seq
@@ -236,23 +222,26 @@ def train_supervised(
 def main(
     paths: OutputManager,
     token_args: preprocess.TokenizerArgs,
-    supervised: bool = False,
-    unsupervised: bool = False,
-) -> None:
-    if not supervised and not unsupervised:
+    train_args: TrainArgs,
+    training_args: Seq2SeqTrainingArguments,
+) -> PreTrainedModel:
+    if not one_and_only_one(train_args.tr_supervised, train_args.tr_unsupervised):
         raise ValueError("Either supervised or unsupervised must be True.")
-    if supervised and unsupervised:
-        raise ValueError("Only one of supervised or unsupervised can be True.")
 
     tokenizer, dataset = preprocess.main(
         paths,
         token_args,
         preprocess.DatasetArgs(),
-        pseudosupervised=supervised,
-        unsupervised=unsupervised,
+        pseudosupervised=train_args.tr_supervised,
+        unsupervised=train_args.tr_unsupervised,
     )
     print(f"{tokenizer=}", flush=True)
     print(f"{dataset=}", flush=True)
+
+    # We preprocessed data so this removes some pesky warnings that are not relevant
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    tokenizer.deprecation_warnings["Asking-to-pad-a-fast-tokenizer"] = True
+    print(f"{os.environ['TOKENIZERS_PARALLELISM']=}", flush=True)
 
     def seq2seq() -> PreTrainedModel:
         return build_seq2seq_model(
@@ -263,12 +252,15 @@ def main(
             tokenizer.pad_token_id,
         )
 
-    if supervised:
-        return train_supervised(seq2seq(), dataset, tokenizer, paths.pseudo_supervised)
-    if unsupervised:
-        return train_unsupervised(seq2seq(), seq2seq(), dataset, tokenizer, paths.unsupervised)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    print("Assuming dataset already tokenized, so settting TOKENIZERS_PARALLELISM=false")
+    if train_args.tr_supervised:
+        model = train_supervised(seq2seq(), dataset, tokenizer, training_args)
+    if train_args.tr_unsupervised:
+        model = train_unsupervised(seq2seq(), seq2seq(), dataset, tokenizer, training_args)
 
-    raise Exception("This should never happen.")
+    print(f"{model=}", flush=True)
+    return model
 
 
 def debug() -> None:
@@ -280,22 +272,32 @@ def debug() -> None:
     )
 
 
-if __name__ == "__main__":
-    parser = ArgumentParser(description="Your program description.")
-    parser.add_argument("--supervised", action="store_true")
-    parser.add_argument("--unsupervised", action="store_true")
-    parser.add_argument("--model", default=preprocess.TokenizerArgs.model, type=str)
-    parser.add_argument("--mode", type=str, default=preprocess.DatasetArgs.mode)
-    parser.add_argument("--debug", action="store_true")
-    args = parser.parse_args()
+def cli() -> None:
+    print(message(True, __file__), flush=True)
 
-    if args.debug:
-        debug()
-        sys.exit(0)
+    parser = HfArgumentParser((TrainArgs, Seq2SeqTrainingArguments))
+    args = parser.parse_args()
+    train_args, training_args = parser.parse_args_into_dataclasses()
+
+    # if args.debug:
+    #     debug()
+    #     sys.exit(0)
+
+    om = OutputManager()
+    if train_args.tr_supervised:
+        training_args.output_dir = om.pseudo_supervised
+    elif train_args.tr_unsupervised:
+        training_args.output_dir = om.unsupervised
 
     main(
-        OutputManager(),
-        preprocess.TokenizerArgs(args.model),
-        args.supervised,
-        args.unsupervised,
+        om,
+        preprocess.TokenizerArgs(args.tokenizer),
+        train_args,
+        training_args,
     )
+
+    print(message(False, __file__), flush=True)
+
+
+if __name__ == "__main__":
+    cli()

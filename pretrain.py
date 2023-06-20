@@ -3,7 +3,11 @@ Pretrain encoder and decoder separately on language modeling tasks.
 """
 
 from argparse import ArgumentParser
+from copy import deepcopy
+from dataclasses import dataclass, field
+import os
 from pathlib import Path
+import sys
 
 from datasets import DatasetDict
 import transformers
@@ -11,6 +15,8 @@ from transformers import (
     AutoModelForCausalLM,
     AutoModelForMaskedLM,
     DataCollatorForLanguageModeling,
+    EarlyStoppingCallback,
+    HfArgumentParser,
     PreTrainedTokenizer,
     PreTrainedModel,
     TrainingArguments,
@@ -19,55 +25,48 @@ from transformers import (
 
 import preprocess
 from preprocess import DatasetArgs, TokenizerArgs
-from utils import OutputManager
+from utils import get_num_workers, message, OutputManager
 
 
-PER_DEVICE_TRAIN_BATCH_SIZE = 1
-PER_DEVICE_EVAL_BATCH_SIZE = 1
+@dataclass
+class PretrainArgs:
+    tokenizer: str = preprocess.TokenizerArgs.model
+    downsize: int = 1
+    patience: int = 5
+    threshold: int = 0
+    tr_encoder: bool = field(default=False, metadata={"help": "Whether to train the encoder."})
+    tr_decoder: bool = field(default=False, metadata={"help": "Whether to train the decoder."})
 
 
 def train_mlm_encoder(
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path,
-    overwrite_output_dir: bool = False,
+    pretrain_args: PretrainArgs,
+    training_args: TrainingArguments,
 ) -> PreTrainedModel:
     config = transformers.BertConfig(
         vocab_size=tokenizer.vocab_size,
-        hidden_size=64,
-        num_hidden_layers=4,
-        num_attention_heads=4,
-        intermediate_size=1024,
+        hidden_size=768 // pretrain_args.downsize,
+        num_hidden_layers=12 // pretrain_args.downsize,
+        num_attention_heads=12 // pretrain_args.downsize,
+        intermediate_size=3072 // pretrain_args.downsize,
         max_position_embeddings=tokenizer.model_max_length,
         type_vocab_size=2,
         pad_token_id=tokenizer.pad_token_id,
         position_embedding_type="absolute",
         use_cache=True,
-        classifier_dropout=None,
+        classifier_dropout=0.2,
     )
     encoder = AutoModelForMaskedLM.from_config(config)
     data_collator = DataCollatorForLanguageModeling(tokenizer)
-    train_args = TrainingArguments(
-        output_dir=output_dir.as_posix(),
-        overwrite_output_dir=overwrite_output_dir,
-        do_train=True,
-        do_eval=True,
-        optim="adamw_torch",
-        evaluation_strategy="epoch",
-        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-        save_total_limit=3,
-        num_train_epochs=2,
-        fp16=True,
-        push_to_hub=False,
-    )
     trainer = Trainer(
         model=encoder,
-        args=train_args,
+        args=training_args,
         data_collator=data_collator,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
         tokenizer=tokenizer,
+        callbacks=[EarlyStoppingCallback(pretrain_args.patience, pretrain_args.threshold)],
     )
     print("Training encoder...", flush=True)
     trainer.train()
@@ -78,44 +77,29 @@ def train_mlm_encoder(
 def train_clm_decoder(
     dataset: DatasetDict,
     tokenizer: PreTrainedTokenizer,
-    output_dir: Path,
-    overwrite_output_dir: bool = False,
+    pretrain_args: PretrainArgs,
+    training_args: TrainingArguments,
 ) -> PreTrainedModel:
     config = transformers.GPT2Config(
         vocab_size=tokenizer.vocab_size,
         n_positions=tokenizer.model_max_length,
-        n_embd=64,
-        n_layer=4,
-        n_head=4,
-        n_inner=1024,
+        n_embd=768 // pretrain_args.downsize,
+        n_layer=12 // pretrain_args.downsize,
+        n_head=12 // pretrain_args.downsize,
+        n_inner=None,
         bos_token_id=tokenizer.bos_token_id,
         eos_token_id=tokenizer.eos_token_id,
     )
     decoder = AutoModelForCausalLM.from_config(config)
     data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-
-    train_args = TrainingArguments(
-        output_dir=output_dir.as_posix(),
-        overwrite_output_dir=overwrite_output_dir,
-        do_train=True,
-        do_eval=True,
-        optim="adamw_torch",
-        evaluation_strategy="epoch",
-        per_device_train_batch_size=PER_DEVICE_TRAIN_BATCH_SIZE,
-        per_device_eval_batch_size=PER_DEVICE_EVAL_BATCH_SIZE,
-        save_total_limit=3,
-        num_train_epochs=2,
-        fp16=True,
-        push_to_hub=False,
-    )
-
     trainer = Trainer(
         model=decoder,
-        args=train_args,
+        args=training_args,
         data_collator=data_collator,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
         tokenizer=tokenizer,
+        callbacks=[EarlyStoppingCallback(pretrain_args.patience, pretrain_args.threshold)],
     )
     print("Training decoder...", flush=True)
     trainer.train()
@@ -124,33 +108,55 @@ def train_clm_decoder(
 
 
 def main(
-    paths: OutputManager,
+    om: OutputManager,
     token_args: TokenizerArgs,
-    tr_encoder: bool,
-    tr_decoder: bool,
+    pretrain_args: PretrainArgs,
+    training_args: TrainingArguments,
 ) -> None:
-    fast_tokenizer, split_tokenized_dataset = preprocess.main(paths, token_args, DatasetArgs(), pretrain=True)
-    print(f"{fast_tokenizer=}", flush=True)
-    print(f"{split_tokenized_dataset=}", flush=True)
+    print(f"{os.path.basename(__file__)}.main", flush=True)
+    print(f"pretrain_args=\n{pretrain_args}", flush=True)
+    print(f"training_args=\n{training_args}", flush=True)
+    print(f"{get_num_workers()=}", flush=True)
 
-    if tr_encoder:
-        encoder = train_mlm_encoder(split_tokenized_dataset, fast_tokenizer, paths.encoder, True)
-        print(f"{encoder=}", flush=True)
-    if tr_decoder:
-        decoder = train_clm_decoder(split_tokenized_dataset, fast_tokenizer, paths.decoder, True)
-        print(f"{decoder=}", flush=True)
+    tokenizer, dataset = preprocess.main(om, token_args, DatasetArgs(), pretrain=True)
+    print(f"{tokenizer=}", flush=True)
+    print(f"{dataset=}", flush=True)
+
+    # We preprocessed data so this removes some pesky warnings that are not relevant
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    tokenizer.deprecation_warnings["Asking-to-pad-a-fast-tokenizer"] = True
+    print(f"{os.environ['TOKENIZERS_PARALLELISM']=}", flush=True)
+
+    if pretrain_args.tr_encoder:
+        encoder = train_mlm_encoder(dataset, tokenizer, pretrain_args, training_args)
+        print(f"encoder=\n{encoder}", flush=True)
+    if pretrain_args.tr_decoder:
+        decoder = train_clm_decoder(dataset, tokenizer, pretrain_args, training_args)
+        print(f"decoder=\n{decoder}", flush=True)
+
+
+def cli() -> None:
+    print(message(True, __file__), flush=True)
+
+    parser = HfArgumentParser((PretrainArgs, TrainingArguments))
+    args = parser.parse_args()
+    pretrain_args, training_args = parser.parse_args_into_dataclasses()
+
+    om = OutputManager()
+    if pretrain_args.tr_encoder:
+        training_args.output_dir = om.encoder
+    elif pretrain_args.tr_decoder:
+        training_args.output_dir = om.decoder
+
+    main(
+        om,
+        TokenizerArgs(args.tokenizer),
+        pretrain_args,
+        training_args,
+    )
+
+    print(message(False, __file__), flush=True)
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Your program description.")
-    parser.add_argument("--model", default=preprocess.TokenizerArgs.model, type=str)
-    parser.add_argument("--tr_encoder", action="store_true")
-    parser.add_argument("--tr_decoder", action="store_true")
-    args = parser.parse_args()
-
-    main(
-        OutputManager(),
-        TokenizerArgs(args.model),
-        args.tr_encoder,
-        args.tr_decoder,
-    )
+    cli()

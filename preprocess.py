@@ -105,7 +105,6 @@ def get_tokenizer(
     dataset: Dataset = None,
     use_cache: bool = True,
 ) -> Tokenizer:
-
     if path is not None and path.exists() and use_cache:
         print(f"Using tokenizer from {path.as_posix()}")
         tokenizer: Tokenizer = Tokenizer.from_file(path.as_posix())
@@ -279,7 +278,6 @@ def main(
 ) -> tuple[PreTrainedTokenizerFast, DatasetDict]:
     """Get the tokenizer and the pretraining or seq2seq dataset."""
     actions = (pretrain, pseudosupervised, unsupervised)
-    assert any(set(actions)) and not all(set(actions)), "Exactly one action must be selected."
 
     files = [p for p in paths.disassemble.iterdir() if p.suffix == ".asm"]
     print(f"Found {round(mem(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
@@ -299,11 +297,24 @@ def main(
     fast_tokenizer = get_pretrained_tokenizer(tokenizer, model_max_length=token_args.model_max_length)
     print(f"{fast_tokenizer=}", flush=True)
 
+    if not any(actions):
+        return fast_tokenizer, dataset
+
     if pretrain:
         print("Tokenizing pretraining dataset...", flush=True)
-        tokenized_dataset = get_processed_pretraining_dataset(
-            dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
-        )
+        paths.pretrain.mkdir(exist_ok=True)
+        if list(paths.pretrain.iterdir()) and data_args.use_cache:
+            tokenized_dataset = Dataset.load_from_disk(paths.pretrain.as_posix())
+        else:
+            tokenized_dataset = get_processed_pretraining_dataset(
+                dataset,
+                fast_tokenizer,
+                data_args.use_cache,
+                truncation=True,
+                padding="longest",
+            )
+            if not data_args.clear_cache:
+                tokenized_dataset.save_to_disk(paths.pretrain.as_posix())
         if data_args.clear_cache:
             tokenized_dataset.cleanup_cache_files()
         print(f"{tokenized_dataset=}", flush=True)

@@ -10,6 +10,7 @@ import os
 import json
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import time
 import typing as tp
@@ -165,6 +166,37 @@ def download(dest_path: Path, n_files: int) -> None:
             f.unlink()
 
 
+def download_windows(dest_path: Path, n_files: int) -> None:
+    WAIT = 5
+
+    print("Downloading Windows...", flush=True)
+
+    dest_path.mkdir(exist_ok=True)
+    command = f"scp -r {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}"
+    pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
+    with tqdm(total=n_files) as pbar:
+        while True:
+            n = sum(1 for _ in dest_path.iterdir())
+            if n >= n_files:
+                break
+            pbar.update(n)
+
+    time.sleep(WAIT)
+    os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
+
+    for f in dest_path.iterdir():
+        if f.suffix == "":
+            f.rename(f.with_suffix(".zlib"))
+        elif f.suffix == ".exe":
+            pass
+        else:
+            f.unlink()
+
+    for i, f in enumerate(dest_path.iterdir()):
+        if i >= n_files:
+            f.unlink()
+
+
 @dataclass
 class ParamArgs:
     n_files: int = 10
@@ -176,6 +208,7 @@ class ParamArgs:
 @dataclass
 class ActionArgs:
     download: bool = False
+    download_windows: bool = False
     extract: bool = False
     unpack: bool = False
     filter: bool = False
@@ -235,6 +268,10 @@ def main(
         if removes.download:
             paths.download.rmdir()
 
+    if actions.download_windows:
+        paths.extract.mkdir(exist_ok=True)
+        download_windows(paths.extract, params.n_files)
+
     if actions.unpack:
         paths.unpack.mkdir(exist_ok=True)
         unpack(list(paths.extract.iterdir()), paths.unpack, removes.extract)
@@ -275,6 +312,7 @@ def cli() -> None:
 
     parser.add_argument("--all", action="store_true", help="ACTION")
     parser.add_argument("--download", action="store_true", help="ACTION")
+    parser.add_argument("--download_windows", action="store_true", help="ACTION")
     parser.add_argument("--extract", action="store_true", help="ACTION")
     parser.add_argument("--unpack", action="store_true", help="ACTION")
     parser.add_argument("--filter", action="store_true", help="ACTION")
@@ -316,6 +354,7 @@ def cli() -> None:
         paths=OutputManager(),
         actions=ActionArgs(
             args.download or args.all,
+            args.download_windows or args.all,
             args.extract or args.all,
             args.unpack or args.all,
             args.filter or args.all,

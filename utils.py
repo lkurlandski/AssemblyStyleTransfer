@@ -4,11 +4,51 @@ Useful functions.
 
 from collections.abc import Collection, Iterable
 import csv
+from datetime import datetime
+import multiprocessing
+import os
 from pathlib import Path
 import typing as tp
 
 import capstone
+from torch import nn
 import pefile
+
+
+def one_and_only_one(*args) -> bool:
+    state = False
+    for arg in args:
+        if arg and state:
+            return False
+        if arg and not state:
+            state = True
+    return state
+
+
+def count_parameters(model: nn.Module):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def estimate_memory_needs(
+    model: nn.Module,
+    float_type: tp.Literal["fp32", "fp16"],
+    optimizer_type: tp.Literal["Adam", "BitsAndBytes", "SGD"],
+) -> int:
+    float_type_map = {"fp32": 4, "fp16": 2, "mixed": 6}
+    optimizer_type_map = {"Adam": 8, "BitsAndBytes": 2, "SGD": 4}
+    c = count_parameters(model)
+    return c * float_type_map[float_type] + c * optimizer_type_map[optimizer_type]
+
+
+def message(start: bool, ___file__: str = __file__) -> str:
+    return f"{'STARTING' if start else 'FINISHING'} {os.path.basename(___file__)} @{datetime.now()}"
+
+
+def get_num_workers() -> int:
+    count = len(os.sched_getaffinity(0))
+    # count = multiprocessing.cpu_count()
+    # return max(count - 4, count // 2 + 1)
+    return count
 
 
 def get_highest_path(
@@ -42,7 +82,8 @@ def adjust_csv_rows(in_file: Path, out_file: Path, adjust_fn: tp.Callable, skip_
         if skip_header:
             writer.writerow(next(reader))
         for row in reader:
-            writer.writerow(adjust_fn(row))
+            if row:
+                writer.writerow(adjust_fn(row))
 
 
 def get_text_section_bounds(f: Path, errors: str = "raise") -> tp.Tuple[int, int]:
@@ -142,24 +183,6 @@ def files_in_dir(path: Path) -> int:
 
 
 class OutputManager:
-    root: Path
-    download: Path = Path("download")
-    extract: Path = Path("extract")
-    unpack: Path = Path("unpack")
-    filter: Path = Path("filter")
-    parse: Path = Path("parse")
-    disassemble: Path = Path("disassemble")
-    snippets: Path = Path("snippets")
-    snippets_mal: Path = Path("mal")
-    snippets_ben: Path = Path("ben")
-    bounds_file: Path = Path("bounds.csv")
-    summary_file: Path = Path("summary.json")
-    tokenizers: Path = Path("tokenizers")
-    models: Path = Path("models")
-    encoder: Path = Path("encoder")
-    decoder: Path = Path("decoder")
-    pseudo_supervised = Path("pseudo_supervised")
-
     def __init__(self, root: Path = ".") -> None:
         self.root = Path(root)
         self.data = self.root / "data"
@@ -174,8 +197,11 @@ class OutputManager:
         self.snippets = self.data / "snippets"
         self.snippets_mal = self.snippets / "mal"
         self.snippets_ben = self.snippets / "ben"
+        self.pretrain = self.data / "pretrain"
+        self.pseudosupervised = self.data / "pseudosupervised"
 
         self.bounds_file = self.output / "bounds.csv"
+        self.bounds_full_file = self.output / "bounds_full.csv"
         self.summary_file = self.output / "summary.json"
         self.tokenizers = self.output / "tokenizers"
         self.models = self.output / "models"
