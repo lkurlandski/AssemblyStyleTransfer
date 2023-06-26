@@ -210,3 +210,26 @@ class OutputManager:
         self.pseudo_supervised = self.models / "pseudo_supervised"
         self.supervised = self.models / "supervised"
         self.unsupervised = self.models / "unsupervised"
+
+    def mkdir(self, *, exist_ok: bool = False, parents: bool = False) -> None:
+        self.root.mkdir(exist_ok=exist_ok, parents=parents)
+        self.data.mkdir(exist_ok=exist_ok, parents=parents)
+        self.output.mkdir(exist_ok=exist_ok, parents=parents)
+        self.download.mkdir(exist_ok=exist_ok, parents=parents)
+        self.extract.mkdir(exist_ok=exist_ok, parents=parents)
+        self.unpack.mkdir(exist_ok=exist_ok, parents=parents)
+        self.filter.mkdir(exist_ok=exist_ok, parents=parents)
+        self.parse.mkdir(exist_ok=exist_ok, parents=parents)
+        self.disassemble.mkdir(exist_ok=exist_ok, parents=parents)
+        self.snippets.mkdir(exist_ok=exist_ok, parents=parents)
+        self.snippets_mal.mkdir(exist_ok=exist_ok, parents=parents)
+        self.snippets_ben.mkdir(exist_ok=exist_ok, parents=parents)
+        self.pretrain.mkdir(exist_ok=exist_ok, parents=parents)
+        self.pseudosupervised.mkdir(exist_ok=exist_ok, parents=parents)
+        self.tokenizers.mkdir(exist_ok=exist_ok, parents=parents)
+        self.models.mkdir(exist_ok=exist_ok, parents=parents)
+        self.encoder.mkdir(exist_ok=exist_ok, parents=parents)
+        self.decoder.mkdir(exist_ok=exist_ok, parents=parents)
+        self.pseudo_supervised.mkdir(exist_ok=exist_ok, parents=parents)
+        self.supervised.mkdir(exist_ok=exist_ok, parents=parents)
+        self.unsupervised.mkdir(exist_ok=exist_ok, parents=parents)

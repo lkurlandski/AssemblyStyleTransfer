@@ -7,7 +7,7 @@ import torch
 
 
 BUCKET = "s3://sorel-20m/09-DEC-2020/binaries/"
-WINDOWS_BUCKET = "lk3591@armitage.csec.rit.edu:/home/lk3591/Documents/datasets/Windows/extracted"
+WINDOWS_BUCKET = "'lk3591@armitage.csec.rit.edu:/home/lk3591/Documents/datasets/Windows/extracted/*'"
 UPX = "upx"
 AWS = "aws"
 ARCH = capstone.CS_ARCH_X86

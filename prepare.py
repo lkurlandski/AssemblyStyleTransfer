@@ -12,13 +12,18 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import typing as tp
 import warnings
 import zlib
 
-import capstone
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+import r2pipe
 
 import cfg
 from utils import (
@@ -35,29 +40,31 @@ from utils import (
 def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool) -> None:
     print("Disassembling...", flush=True)
 
-    def format_fn(ins):
-        return instruction_as_str(ins, address=address)
+    # name_file_map = {f.name: f for f in files}
 
-    md = capstone.Cs(cfg.ARCH, cfg.MODE)
+    # with open(bounds_file, encoding="utf-8") as handle:
+    #     reader = csv.reader(handle)
+    #     next(reader)
+    #     for row in tqdm(reader, total=len(name_file_map)):
+    #         if not row:
+    #             break
+    #         f, l, u, _ = row
+    #         f = name_file_map[Path(f).name]
+    #         l = int(l)
+    #         u = int(u)
+            
+    #         r2 = r2pipe.open(f.as_posix())
+    #         r2.cmd("aa")
+    #         instructions = r2.cmd("pd $s")
+    #         with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
+    #             handle_.write(instructions)
 
-    name_file_map = {f.name: f for f in files}
-
-    with open(bounds_file, encoding="utf-8") as handle:
-        reader = csv.reader(handle)
-        next(reader)
-        for row in tqdm(reader, total=len(name_file_map)):
-            if not row:
-                break
-            f, l, u, _ = row
-            f = name_file_map[Path(f).name]
-            l = int(l)
-            u = int(u)
-
-            code = read_file(f, l, u)
-            instructions = disasm(md, code, format_fn, start=l)
-
-            with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
-                handle_.write("\n".join(instructions) + "\n")
+    for f in files:
+        r2 = r2pipe.open(f.as_posix())
+        r2.cmd("aa")
+        instructions = r2.cmd("pd $s")
+        with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
+            handle_.write(instructions)
 
 
 def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bool, remove: bool) -> None:
@@ -138,7 +145,7 @@ def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
 def download(dest_path: Path, n_files: int) -> None:
     WAIT = 5
 
-    print("Downloading...", flush=True)
+    print("Downloading SOREL...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
     command = f"{cfg.AWS} s3 cp {cfg.BUCKET} {dest_path} --recursive --no-sign-request --quiet"
@@ -172,29 +179,19 @@ def download_windows(dest_path: Path, n_files: int) -> None:
     print("Downloading Windows...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
-    command = f"scp -r {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}"
+    command = f"scp {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}/"
+    print(command)
+    #sys.exit()
     pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
     with tqdm(total=n_files) as pbar:
         while True:
             n = sum(1 for _ in dest_path.iterdir())
-            if n >= n_files:
+            if n >= n_files * 2:
                 break
             pbar.update(n)
 
     time.sleep(WAIT)
     os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
-
-    for f in dest_path.iterdir():
-        if f.suffix == "":
-            f.rename(f.with_suffix(".zlib"))
-        elif f.suffix == ".exe":
-            pass
-        else:
-            f.unlink()
-
-    for i, f in enumerate(dest_path.iterdir()):
-        if i >= n_files:
-            f.unlink()
 
 
 @dataclass
@@ -256,18 +253,16 @@ def main(
     if clean.disassemble:
         shutil.rmtree(paths.disassemble, ignore_errors=True)
 
-    paths.root.mkdir(exist_ok=True, parents=True)
+    paths.mkdir(exist_ok=True, parents=True)
 
     if actions.download:
         paths.download.mkdir(exist_ok=True)
         download(paths.download, params.n_files)
-
     if actions.extract:
         paths.extract.mkdir(exist_ok=True)
         extract(list(paths.download.iterdir()), paths.extract, removes.download)
         if removes.download:
             paths.download.rmdir()
-
     if actions.download_windows:
         paths.extract.mkdir(exist_ok=True)
         download_windows(paths.extract, params.n_files)
@@ -299,7 +294,7 @@ def debug() -> None:
     main(
         params=ParamArgs(),
         paths=OutputManager(),
-        actions=ActionArgs(),
+        actions=ActionArgs(disassemble=True),
         removes=RemoveArgs(),
         clean=CleanArgs(),
     )
