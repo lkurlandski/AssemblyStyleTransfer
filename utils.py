@@ -30,9 +30,7 @@ def count_parameters(model: nn.Module):
 
 
 def estimate_memory_needs(
-    model: nn.Module,
-    float_type: tp.Literal["fp32", "fp16"],
-    optimizer_type: tp.Literal["Adam", "BitsAndBytes", "SGD"],
+    model: nn.Module, float_type: tp.Literal["fp32", "fp16"], optimizer_type: tp.Literal["Adam", "BitsAndBytes", "SGD"]
 ) -> int:
     float_type_map = {"fp32": 4, "fp16": 2, "mixed": 6}
     optimizer_type_map = {"Adam": 8, "BitsAndBytes": 2, "SGD": 4}
@@ -51,11 +49,7 @@ def get_num_workers() -> int:
     return count
 
 
-def get_highest_path(
-    path_or_files: Collection[Path] | Path,
-    lstrip: str = "",
-    rstrip: str = "",
-) -> Path:
+def get_highest_path(path_or_files: Collection[Path] | Path, lstrip: str = "", rstrip: str = "") -> Path:
     if isinstance(path_or_files, (Path, str)):
         files = Path(path_or_files).iterdir()
     else:
@@ -68,7 +62,7 @@ def mem(path_or_files: Collection[Path] | Path) -> float:
         files = Path(path_or_files).iterdir()
     else:
         files = path_or_files
-    return sum(f.stat().st_size for f in files) * 10e-9
+    return sum(f.stat().st_size for f in files) * 1e-9
 
 
 def clear_cache(*datasets) -> list[int]:
@@ -159,7 +153,7 @@ def maybe_remove(f: Path, remove: bool) -> None:
 
 
 def convert_size(size: tp.Union[int, float, str]) -> tp.Union[float, str]:
-    symbols_to_size = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3, "T": 1024**4}
+    symbols_to_size = {"B": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}
 
     if isinstance(size, (int, float)):
         s_, m_ = "B", 1

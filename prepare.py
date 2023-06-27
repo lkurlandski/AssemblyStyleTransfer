@@ -9,6 +9,9 @@ from dataclasses import dataclass
 import os
 import json
 from pathlib import Path
+import pefile as pe
+from pprint import pprint
+import re
 import shutil
 import signal
 import subprocess
@@ -37,34 +40,84 @@ from utils import (
 )
 
 
+class PDRParser:
+
+    start_char = "┌"
+    end_char = "└"
+
+    def __init__(self, f: Path):
+        self.idx = 0
+        r2 = r2pipe.open(f.as_posix())
+        r2.cmd("aaaa")
+        self.output = r2.cmd("pdr @@f").split("\n")
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return len(self.output)
+
+    def __next__(self):
+        if self.idx == len(self):
+            raise StopIteration
+        func = []
+        add = False
+        look_for_start = False
+        start = None
+        end = None
+        while self.idx < len(self):
+            line = self.output[self.idx]
+            self.idx += 1
+            if not line:
+                continue
+            if look_for_start and start is None:
+                try:
+                    start = int(self.extract_address(line), 16)
+                    look_for_start = False
+                except ValueError:
+                    start = None
+            if line[0] == self.end_char:  # indicates end of a function
+                try:
+                    end = int(self.extract_address(line), 16)
+                except ValueError:
+                    end = None
+                func.append(line)
+                return start, end, func
+            if line[0] == self.start_char:  # indicates start of function
+                if add:  # indicates a double-nested function, in which case I have no idea what to do, so we just start over
+                    func = []
+                add = True
+                look_for_start = True
+                start = None
+            if add:
+                func.append(line)
+        if func:
+            return start, end, func
+        raise StopIteration
+
+    @staticmethod
+    def extract_address(line: str):
+        return line[2:13]
+
+
 def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool) -> None:
     print("Disassembling...", flush=True)
 
-    # name_file_map = {f.name: f for f in files}
-
-    # with open(bounds_file, encoding="utf-8") as handle:
-    #     reader = csv.reader(handle)
-    #     next(reader)
-    #     for row in tqdm(reader, total=len(name_file_map)):
-    #         if not row:
-    #             break
-    #         f, l, u, _ = row
-    #         f = name_file_map[Path(f).name]
-    #         l = int(l)
-    #         u = int(u)
-            
-    #         r2 = r2pipe.open(f.as_posix())
-    #         r2.cmd("aa")
-    #         instructions = r2.cmd("pd $s")
-    #         with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
-    #             handle_.write(instructions)
-
     for f in files:
-        r2 = r2pipe.open(f.as_posix())
-        r2.cmd("aa")
-        instructions = r2.cmd("pd $s")
-        with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
-            handle_.write(instructions)
+        outpath = dest_path / f.stem
+        outpath.mkdir()
+        parser = PDRParser(f)
+        for i, (start, end, func) in enumerate(parser):
+            outfile = outpath / f"{start}_{end}.asm"
+            if outfile.exists():
+                pass  # FIXME: the addresses need to be properly located prior to actually TRAINING
+            with open(outfile, "w") as handle:
+                handle.write("\n".join(func))
+        if not list(outpath.iterdir()):
+            raise IOError(outfile)
+            # parser(f)
+            # for start, end, func in parser:
+            #     print(start, end, func)
 
 
 def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bool, remove: bool) -> None:
@@ -97,7 +150,10 @@ def filter_(files: Collection[Path], dest_path: Path, max_len: int, remove: bool
             return False
         if p.stat().st_size > max_len:
             return False
-        return True
+        try:
+            return pe.PE(p.as_posix()).FILE_HEADER.IMAGE_FILE_32BIT_MACHINE
+        except Exception:
+            return False
 
     for f in tqdm(files):
         if not fn(f):
@@ -296,7 +352,7 @@ def debug() -> None:
         paths=OutputManager(),
         actions=ActionArgs(disassemble=True),
         removes=RemoveArgs(),
-        clean=CleanArgs(),
+        clean=CleanArgs(disassemble=True),
     )
 
 
