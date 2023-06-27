@@ -32,7 +32,7 @@ def get_raw_assembly_dataset(files: Collection[Path]) -> Dataset:
     return dataset
 
 
-def get_normalizer() -> normalizers.Sequence:
+def get_pre_normalizer() -> normalizers.Sequence:
     """Normalizer for functions produced by the radare2 PDR command."""
     rxs_and_rps = [
         (r"^┌.*\n", ""),
@@ -42,6 +42,13 @@ def get_normalizer() -> normalizers.Sequence:
         (r"│ ", ""),
         (r"\n{2,}", "\n"),
         (r"^.{31}", ""),
+    ]
+    norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
+    return normalizers.Sequence(norms)
+
+
+def get_normalizer() -> normalizers.Sequence:
+    rxs_and_rps = [
         (r"str\.\S*", cfg.STR),
         (r"sym\.\S*", cfg.SYM),
         (r"var_\w+", cfg.VAR),
@@ -49,7 +56,6 @@ def get_normalizer() -> normalizers.Sequence:
     ]
     norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
     return normalizers.Sequence(norms)
-
 
 # def get_normalizer() -> normalizers.Sequence:
 #     return normalizers.Sequence(

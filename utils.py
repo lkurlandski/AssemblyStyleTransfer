@@ -182,7 +182,8 @@ class OutputManager:
         self.data = self.root / "data"
         self.output = self.root / "output"
 
-        self.download = self.data / "download"
+        self.download_sorel = self.data / "download_sorel"
+        self.download_windows = self.data / "download_windows"
         self.extract = self.data / "extract"
         self.unpack = self.data / "unpack"
         self.filter = self.data / "filter"
@@ -209,7 +210,8 @@ class OutputManager:
         self.root.mkdir(exist_ok=exist_ok, parents=parents)
         self.data.mkdir(exist_ok=exist_ok, parents=parents)
         self.output.mkdir(exist_ok=exist_ok, parents=parents)
-        self.download.mkdir(exist_ok=exist_ok, parents=parents)
+        self.download_sorel.mkdir(exist_ok=exist_ok, parents=parents)
+        self.download_windows.mkdir(exist_ok=exist_ok, parents=parents)
         self.extract.mkdir(exist_ok=exist_ok, parents=parents)
         self.unpack.mkdir(exist_ok=exist_ok, parents=parents)
         self.filter.mkdir(exist_ok=exist_ok, parents=parents)
