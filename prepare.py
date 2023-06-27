@@ -9,16 +9,24 @@ from dataclasses import dataclass
 import os
 import json
 from pathlib import Path
+import pefile as pe
+from pprint import pprint
+import re
 import shutil
 import signal
 import subprocess
+import sys
 import time
 import typing as tp
 import warnings
 import zlib
 
-import capstone
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
+import r2pipe
 
 import cfg
 from utils import (
@@ -32,32 +40,84 @@ from utils import (
 )
 
 
+class PDRParser:
+
+    start_char = "┌"
+    end_char = "└"
+
+    def __init__(self, f: Path):
+        self.idx = 0
+        r2 = r2pipe.open(f.as_posix())
+        r2.cmd("aaaa")
+        self.output = r2.cmd("pdr @@f").split("\n")
+
+    def __iter__(self):
+        return self
+
+    def __len__(self):
+        return len(self.output)
+
+    def __next__(self):
+        if self.idx == len(self):
+            raise StopIteration
+        func = []
+        add = False
+        look_for_start = False
+        start = None
+        end = None
+        while self.idx < len(self):
+            line = self.output[self.idx]
+            self.idx += 1
+            if not line:
+                continue
+            if look_for_start and start is None:
+                try:
+                    start = int(self.extract_address(line), 16)
+                    look_for_start = False
+                except ValueError:
+                    start = None
+            if line[0] == self.end_char:  # indicates end of a function
+                try:
+                    end = int(self.extract_address(line), 16)
+                except ValueError:
+                    end = None
+                func.append(line)
+                return start, end, func
+            if line[0] == self.start_char:  # indicates start of function
+                if add:  # indicates a double-nested function, in which case I have no idea what to do, so we just start over
+                    func = []
+                add = True
+                look_for_start = True
+                start = None
+            if add:
+                func.append(line)
+        if func:
+            return start, end, func
+        raise StopIteration
+
+    @staticmethod
+    def extract_address(line: str):
+        return line[2:13]
+
+
 def disassemble(files: Collection[Path], dest_path: Path, bounds_file: Path, address: bool) -> None:
     print("Disassembling...", flush=True)
 
-    def format_fn(ins):
-        return instruction_as_str(ins, address=address)
-
-    md = capstone.Cs(cfg.ARCH, cfg.MODE)
-
-    name_file_map = {f.name: f for f in files}
-
-    with open(bounds_file, encoding="utf-8") as handle:
-        reader = csv.reader(handle)
-        next(reader)
-        for row in tqdm(reader, total=len(name_file_map)):
-            if not row:
-                break
-            f, l, u, _ = row
-            f = name_file_map[Path(f).name]
-            l = int(l)
-            u = int(u)
-
-            code = read_file(f, l, u)
-            instructions = disasm(md, code, format_fn, start=l)
-
-            with open((dest_path / f.name).with_suffix(".asm"), "w", encoding="utf-8") as handle_:
-                handle_.write("\n".join(instructions) + "\n")
+    for f in files:
+        outpath = dest_path / f.stem
+        outpath.mkdir()
+        parser = PDRParser(f)
+        for i, (start, end, func) in enumerate(parser):
+            outfile = outpath / f"{start}_{end}.asm"
+            if outfile.exists():
+                pass  # FIXME: the addresses need to be properly located prior to actually TRAINING
+            with open(outfile, "w") as handle:
+                handle.write("\n".join(func))
+        if not list(outpath.iterdir()):
+            raise IOError(outfile)
+            # parser(f)
+            # for start, end, func in parser:
+            #     print(start, end, func)
 
 
 def parse(files: Collection[Path], dest_path: Path, bounds_file: Path, posix: bool, remove: bool) -> None:
@@ -90,7 +150,10 @@ def filter_(files: Collection[Path], dest_path: Path, max_len: int, remove: bool
             return False
         if p.stat().st_size > max_len:
             return False
-        return True
+        try:
+            return pe.PE(p.as_posix()).FILE_HEADER.IMAGE_FILE_32BIT_MACHINE
+        except Exception:
+            return False
 
     for f in tqdm(files):
         if not fn(f):
@@ -138,7 +201,7 @@ def extract(files: Collection[Path], dest_path: Path, remove: bool) -> None:
 def download(dest_path: Path, n_files: int) -> None:
     WAIT = 5
 
-    print("Downloading...", flush=True)
+    print("Downloading SOREL...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
     command = f"{cfg.AWS} s3 cp {cfg.BUCKET} {dest_path} --recursive --no-sign-request --quiet"
@@ -172,29 +235,19 @@ def download_windows(dest_path: Path, n_files: int) -> None:
     print("Downloading Windows...", flush=True)
 
     dest_path.mkdir(exist_ok=True)
-    command = f"scp -r {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}"
+    command = f"scp {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}/"
+    print(command)
+    #sys.exit()
     pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
     with tqdm(total=n_files) as pbar:
         while True:
             n = sum(1 for _ in dest_path.iterdir())
-            if n >= n_files:
+            if n >= n_files * 2:
                 break
             pbar.update(n)
 
     time.sleep(WAIT)
     os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
-
-    for f in dest_path.iterdir():
-        if f.suffix == "":
-            f.rename(f.with_suffix(".zlib"))
-        elif f.suffix == ".exe":
-            pass
-        else:
-            f.unlink()
-
-    for i, f in enumerate(dest_path.iterdir()):
-        if i >= n_files:
-            f.unlink()
 
 
 @dataclass
@@ -256,18 +309,16 @@ def main(
     if clean.disassemble:
         shutil.rmtree(paths.disassemble, ignore_errors=True)
 
-    paths.root.mkdir(exist_ok=True, parents=True)
+    paths.mkdir(exist_ok=True, parents=True)
 
     if actions.download:
         paths.download.mkdir(exist_ok=True)
         download(paths.download, params.n_files)
-
     if actions.extract:
         paths.extract.mkdir(exist_ok=True)
         extract(list(paths.download.iterdir()), paths.extract, removes.download)
         if removes.download:
             paths.download.rmdir()
-
     if actions.download_windows:
         paths.extract.mkdir(exist_ok=True)
         download_windows(paths.extract, params.n_files)
@@ -299,9 +350,9 @@ def debug() -> None:
     main(
         params=ParamArgs(),
         paths=OutputManager(),
-        actions=ActionArgs(),
+        actions=ActionArgs(disassemble=True),
         removes=RemoveArgs(),
-        clean=CleanArgs(),
+        clean=CleanArgs(disassemble=True),
     )
 
 

@@ -19,13 +19,7 @@ import transformers
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, PretrainedConfig
 
 import cfg
-import prepare
 from utils import mem, OutputManager
-
-
-class Disassembler(Enum):
-    CS: int = 0  # tokenizer for the data files produced by the capstone disassembler pipeline
-    IDA: int = 1  # tokenizer for the data files produced by the IDA disassembler pipeline
 
 
 def get_raw_assembly_dataset(files: Collection[Path]) -> Dataset:
@@ -38,46 +32,52 @@ def get_raw_assembly_dataset(files: Collection[Path]) -> Dataset:
     return dataset
 
 
-def get_normalizer(dis: Disassembler) -> normalizers.Sequence:
-    if dis == Disassembler.CS:
-        return normalizers.Sequence(
-            [
-                normalizers.Replace(tokenizers.Regex(r"\w+\t"), ""),  # Remove address before tab
-                normalizers.Replace(tokenizers.Regex(r"\b0x\w+\b"), cfg.ADR),  # Replace addresses
-            ]
-        )
-    elif dis == Disassembler.IDA:  # TODO
-        return normalizers.Sequence(
-            [
-                normalizers.Replace(tokenizers.Regex(r"\w+\t"), ""),  # Remove address before tab
-                normalizers.Replace(tokenizers.Regex(r"\b0x\w+\b"), cfg.ADR),  # Replace addresses
-            ]
-        )
-    raise ValueError()
+def get_normalizer() -> normalizers.Sequence:
+    """Normalizer for functions produced by the radare2 PDR command."""
+    rxs_and_rps = [
+        (r"^┌.*\n", ""),
+        (r"└", "│"),
+        (r"^\|.*\n", ""),
+        (r";.*", ""),
+        (r"│ ", ""),
+        (r"\n{2,}", "\n"),
+        (r"^.{31}", ""),
+        (r"str\.\S*", cfg.STR),
+        (r"sym\.\S*", cfg.SYM),
+        (r"var_\w+", cfg.VAR),
+        (r"\b0x\w+\b", cfg.ADR),
+    ]
+    norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
+    return normalizers.Sequence(norms)
 
 
-def get_pre_tokenizer(dis: Disassembler) -> pre_tokenizers.Sequence:
-    if dis == Disassembler.CS:
-        return pre_tokenizers.Sequence(
-            [
-                pre_tokenizers.Whitespace(),
-                pre_tokenizers.CharDelimiterSplit("\n"),
-                pre_tokenizers.Punctuation("isolated"),
-                pre_tokenizers.Split(tokenizers.Regex(r"\[|\]"), "isolated"),
-                pre_tokenizers.Split(cfg.ADR, "isolated"),
-            ]
-        )
-    elif dis == Disassembler.IDA:  # TODO
-        return pre_tokenizers.Sequence(
-            [
-                pre_tokenizers.Whitespace(),
-                pre_tokenizers.CharDelimiterSplit("\n"),
-                pre_tokenizers.Punctuation("isolated"),
-                pre_tokenizers.Split(tokenizers.Regex(r"\[|\]"), "isolated"),
-                pre_tokenizers.Split(cfg.ADR, "isolated"),
-            ]
-        )
-    raise ValueError()
+# def get_normalizer() -> normalizers.Sequence:
+#     return normalizers.Sequence(
+#         [
+#             normalizers.Replace(tokenizers.Regex(r";.*"), ""),  #  Strip comments
+#             normalizers.Replace(tokenizers.Regex(r"^.{43}"), ""),  #  Strip first 43 characters
+#             normalizers.Replace(tokenizers.Regex(r"str\.\S*"), cfg.STR),  # Replace strings
+#             normalizers.Replace(tokenizers.Regex(r"sym\.\S*"), cfg.SYM),  # Replace strings
+#             normalizers.Replace(tokenizers.Regex(r"var_\w+"), cfg.VAR),  # Replace variables
+#             normalizers.Replace(tokenizers.Regex(r"\b0x\w+\b"), cfg.ADR),  # Replace addresses
+#         ]
+#     )
+
+
+def get_pre_tokenizer() -> pre_tokenizers.Sequence:
+    return pre_tokenizers.Sequence(
+        [
+            pre_tokenizers.Whitespace(),
+            pre_tokenizers.CharDelimiterSplit("\n"),
+            pre_tokenizers.CharDelimiterSplit(","),
+            pre_tokenizers.CharDelimiterSplit("["),
+            pre_tokenizers.CharDelimiterSplit("]"),
+            pre_tokenizers.Split(cfg.STR, "isolated"),
+            pre_tokenizers.Split(cfg.SYM, "isolated"),
+            pre_tokenizers.Split(cfg.VAR, "isolated"),
+            pre_tokenizers.Split(cfg.ADR, "isolated"),
+        ]
+    )
 
 
 def get_model(model: str) -> Tokenizer:
@@ -112,17 +112,17 @@ def get_post_processor() -> processors.TemplateProcessing:
     )
 
 
-def _batch_iterator(dataset: Dataset, batch_size: int = 1024) -> tp.Generator[str, None, None]:
+def batch_iterator(dataset: Dataset, batch_size: int = 512) -> tp.Generator[str, None, None]:
     for i in range(0, len(dataset), batch_size):
         yield dataset[i : i + batch_size]["text"]
 
 
-def _get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
+def get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
     return (Path(tokenizers_path) / model).with_suffix(".json")
 
 
 def get_tokenizer(tokenizers_path: Path, model: Path, files: Collection[Path] = None) -> Tokenizer:
-    path = _get_tokenizer_file(tokenizers_path, model)
+    path = get_tokenizer_file(tokenizers_path, model)
     print(f"Tokenizer file: {path.as_posix()}", flush=True)
     if path.exists():
         print(f"Found cached tokenizer.", flush=True)
@@ -136,7 +136,7 @@ def get_tokenizer(tokenizers_path: Path, model: Path, files: Collection[Path] = 
     tokenizer.normalizer = get_normalizer()
     tokenizer.pre_tokenizer = get_pre_tokenizer()
     tokenizer.post_processor = get_post_processor()
-    tokenizer.train_from_iterator(_batch_iterator(dataset), trainer, length=len(dataset))
+    tokenizer.train_from_iterator(batch_iterator(dataset), trainer, length=len(dataset))
     path.parent.mkdir(parents=True, exist_ok=True)
     tokenizer.save(path.as_posix())
 
@@ -160,11 +160,17 @@ def get_fast_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokenizerFas
 
 
 def main(model: str) -> None:
-    tokenizer = get_tokenizer("WordLevel")
+    om = OutputManager()
+    tokenizers_path = om.tokenizers
+    files = list(om.disassemble.rglob("*.asm"))
+    tokenizer = get_tokenizer(tokenizers_path, "WordLevel", files)
 
 
 def cli() -> None:
-    main()
+    parser = ArgumentParser()
+    parser.add_argument("--model", type=str, choices=["WordLevel", "WordPiece", "BPE", "Unigram"])
+    args = parser.parse_args()
+    main(args.model)
 
 
 if __name__ == "__main__":
