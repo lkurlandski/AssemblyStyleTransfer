@@ -39,10 +39,7 @@ class PretrainArgs:
 
 
 def train_mlm_encoder(
-    dataset: DatasetDict,
-    tokenizer: PreTrainedTokenizer,
-    pretrain_args: PretrainArgs,
-    training_args: TrainingArguments,
+    dataset: DatasetDict, tokenizer: PreTrainedTokenizer, pretrain_args: PretrainArgs, training_args: TrainingArguments
 ) -> PreTrainedModel:
     config = transformers.BertConfig(
         vocab_size=tokenizer.vocab_size,
@@ -75,10 +72,7 @@ def train_mlm_encoder(
 
 
 def train_clm_decoder(
-    dataset: DatasetDict,
-    tokenizer: PreTrainedTokenizer,
-    pretrain_args: PretrainArgs,
-    training_args: TrainingArguments,
+    dataset: DatasetDict, tokenizer: PreTrainedTokenizer, pretrain_args: PretrainArgs, training_args: TrainingArguments
 ) -> PreTrainedModel:
     config = transformers.GPT2Config(
         vocab_size=tokenizer.vocab_size,
@@ -108,10 +102,7 @@ def train_clm_decoder(
 
 
 def main(
-    om: OutputManager,
-    token_args: TokenizerArgs,
-    pretrain_args: PretrainArgs,
-    training_args: TrainingArguments,
+    om: OutputManager, token_args: TokenizerArgs, pretrain_args: PretrainArgs, training_args: TrainingArguments
 ) -> None:
     print(f"{os.path.basename(__file__)}.main", flush=True)
     print(f"pretrain_args=\n{pretrain_args}", flush=True)
@@ -148,12 +139,7 @@ def cli() -> None:
     elif pretrain_args.tr_decoder:
         training_args.output_dir = om.decoder
 
-    main(
-        om,
-        TokenizerArgs(args.tokenizer),
-        pretrain_args,
-        training_args,
-    )
+    main(om, TokenizerArgs(args.tokenizer), pretrain_args, training_args)
 
     print(message(False, __file__), flush=True)
 

@@ -33,14 +33,7 @@ from transformers import (
 
 import cfg
 import preprocess
-from utils import (
-    estimate_memory_needs,
-    get_highest_path,
-    get_num_workers,
-    message,
-    one_and_only_one,
-    OutputManager,
-)
+from utils import estimate_memory_needs, get_highest_path, get_num_workers, message, one_and_only_one, OutputManager
 
 
 @dataclass
@@ -96,10 +89,7 @@ def train_unsupervised(
         seq2seq: PreTrainedModel, epoch: int, direction: Direction
     ) -> DataCollatorForSeq2Seq:  # pylint: disable=unused-argument
         return DataCollatorForSeq2Seq(
-            tokenizer,
-            model=seq2seq,
-            max_length=tokenizer.model_max_length,
-            padding="max_length",
+            tokenizer, model=seq2seq, max_length=tokenizer.model_max_length, padding="max_length"
         )
 
     def get_single_run_training_args(
@@ -150,24 +140,14 @@ def train_unsupervised(
         return dataset_for_learner
 
     def backtranslate(
-        learner: PreTrainedModel,
-        generator: PreTrainedModel,
-        output_dir: Path,
-        epoch: int,
-        direction: Direction,
+        learner: PreTrainedModel, generator: PreTrainedModel, output_dir: Path, epoch: int, direction: Direction
     ):
         data_collator = get_single_run_data_collator(learner, epoch, direction)
         training_args = get_single_run_training_args(output_dir, epoch, direction)
         dataset = get_synthetic_dataset(generator, direction)
         dataset = dataset.train_test_split(test_size=0.1, load_from_cache_file=False)
         trainer = get_single_run_trainer(
-            learner,
-            training_args,
-            data_collator,
-            dataset["train"],
-            dataset["test"],
-            epoch,
-            direction,
+            learner, training_args, data_collator, dataset["train"], dataset["test"], epoch, direction
         )
         trainer.train()
 
@@ -199,10 +179,7 @@ def train_supervised(
     training_args: Seq2SeqTrainingArguments,
 ) -> PreTrainedModel:
     data_collator = transformers.DataCollatorForSeq2Seq(
-        tokenizer,
-        model=seq2seq,
-        max_length=tokenizer.model_max_length,
-        padding="max_length",
+        tokenizer, model=seq2seq, max_length=tokenizer.model_max_length, padding="max_length"
     )
     trainer = transformers.Seq2SeqTrainer(
         model=seq2seq,
@@ -264,12 +241,7 @@ def main(
 
 
 def debug() -> None:
-    main(
-        OutputManager(),
-        preprocess.TokenizerArgs(),
-        True,
-        False,
-    )
+    main(OutputManager(), preprocess.TokenizerArgs(), True, False)
 
 
 def cli() -> None:
@@ -289,12 +261,7 @@ def cli() -> None:
     elif train_args.tr_unsupervised:
         training_args.output_dir = om.unsupervised
 
-    main(
-        om,
-        preprocess.TokenizerArgs(args.tokenizer),
-        train_args,
-        training_args,
-    )
+    main(om, preprocess.TokenizerArgs(args.tokenizer), train_args, training_args)
 
     print(message(False, __file__), flush=True)
 

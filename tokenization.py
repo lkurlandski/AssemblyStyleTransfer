@@ -36,8 +36,9 @@ def get_pre_normalizer() -> normalizers.Sequence:
     """Normalizer for functions produced by the radare2 PDR command."""
     rxs_and_rps = [
         (r"^┌.*\n", ""),
+        (r"^├.*\n", ""),
         (r"└", "│"),
-        (r"^\|.*\n", ""),
+        (r"^\|.*(?:\n|$)", ""),
         (r";.*", ""),
         (r"│ ", ""),
         (r"\n{2,}", "\n"),
@@ -49,40 +50,29 @@ def get_pre_normalizer() -> normalizers.Sequence:
 
 def get_normalizer() -> normalizers.Sequence:
     rxs_and_rps = [
+        (r"(?<=\s)\d+(?=\s)", cfg.NUM),
+        (r"asm\.\S*", cfg.ASM),
+        (r"vtable\.\S*", cfg.VTABLE),
+        (r"switch\.\S*", cfg.SWITCH),
         (r"str\.\S*", cfg.STR),
         (r"sym\.\S*", cfg.SYM),
-        (r"var_\w+", cfg.VAR),
+        (r"fcn\.\S*", cfg.FCN),
+        (r"sub\.\S*", cfg.SUB),
+        (r"case\.\S*", cfg.CASE),
+        (r"var_\S*", cfg.VAR),
+        (r"arg_\S*", cfg.ARG),
         (r"\b0x\w+\b", cfg.ADR),
     ]
     norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
     return normalizers.Sequence(norms)
 
-# def get_normalizer() -> normalizers.Sequence:
-#     return normalizers.Sequence(
-#         [
-#             normalizers.Replace(tokenizers.Regex(r";.*"), ""),  #  Strip comments
-#             normalizers.Replace(tokenizers.Regex(r"^.{43}"), ""),  #  Strip first 43 characters
-#             normalizers.Replace(tokenizers.Regex(r"str\.\S*"), cfg.STR),  # Replace strings
-#             normalizers.Replace(tokenizers.Regex(r"sym\.\S*"), cfg.SYM),  # Replace strings
-#             normalizers.Replace(tokenizers.Regex(r"var_\w+"), cfg.VAR),  # Replace variables
-#             normalizers.Replace(tokenizers.Regex(r"\b0x\w+\b"), cfg.ADR),  # Replace addresses
-#         ]
-#     )
-
 
 def get_pre_tokenizer() -> pre_tokenizers.Sequence:
+    # pre_tokenizers.Whitespace splits on "<", ">"
+    isolated = [",", "]", "[", "*", "/", "+", "-"] + cfg.SPECIALS
+    removed = [" ", "\t", "\n"]
     return pre_tokenizers.Sequence(
-        [
-            pre_tokenizers.Whitespace(),
-            pre_tokenizers.CharDelimiterSplit("\n"),
-            pre_tokenizers.CharDelimiterSplit(","),
-            pre_tokenizers.CharDelimiterSplit("["),
-            pre_tokenizers.CharDelimiterSplit("]"),
-            pre_tokenizers.Split(cfg.STR, "isolated"),
-            pre_tokenizers.Split(cfg.SYM, "isolated"),
-            pre_tokenizers.Split(cfg.VAR, "isolated"),
-            pre_tokenizers.Split(cfg.ADR, "isolated"),
-        ]
+        [pre_tokenizers.Split(s, "removed") for s in removed] + [pre_tokenizers.Split(s, "isolated") for s in isolated]
     )
 
 
@@ -98,15 +88,15 @@ def get_model(model: str) -> Tokenizer:
     raise ValueError()
 
 
-def get_trainer(model: models.Model) -> trainers.Trainer:
+def get_trainer(model: models.Model, vocab_size: int = None) -> trainers.Trainer:
     if isinstance(model, models.WordLevel):
-        return trainers.WordLevelTrainer(special_tokens=cfg.SPECIALS)
+        return trainers.WordLevelTrainer(vocab_size)  # for some reason, adding special_tokens here fucks everything up
     elif isinstance(model, models.WordPiece):
-        return trainers.WordPieceTrainer(special_tokens=cfg.SPECIALS)
+        return trainers.WordPieceTrainer(vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.BPE):
-        return trainers.BpeTrainer(special_tokens=cfg.SPECIALS)
+        return trainers.BpeTrainer(vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.Unigram):
-        return trainers.UnigramTrainer(unk_token=cfg.UNK, special_tokens=cfg.SPECIALS)
+        return trainers.UnigramTrainer(vocab_size, unk_token=cfg.UNK, special_tokens=cfg.SPECIALS)
     raise ValueError()
 
 
@@ -116,6 +106,10 @@ def get_post_processor() -> processors.TemplateProcessing:
         pair=f"{cfg.BOS} $A {cfg.EOS} {cfg.BOS} $B:1 {cfg.EOS}:1",
         special_tokens=[(t, i) for i, t in enumerate(cfg.SPECIALS)],
     )
+
+
+def get_added_special_token(s: str) -> tokenizers.AddedToken:
+    return tokenizers.AddedToken(s, lstrip=True, rstrip=True, normalized=False)
 
 
 def batch_iterator(dataset: Dataset, batch_size: int = 512) -> tp.Generator[str, None, None]:
@@ -142,9 +136,11 @@ def get_tokenizer(tokenizers_path: Path, model: Path, files: Collection[Path] = 
     tokenizer.normalizer = get_normalizer()
     tokenizer.pre_tokenizer = get_pre_tokenizer()
     tokenizer.post_processor = get_post_processor()
+    tokenizer.add_special_tokens([get_added_special_token(s) for s in cfg.SPECIALS])
     tokenizer.train_from_iterator(batch_iterator(dataset), trainer, length=len(dataset))
     path.parent.mkdir(parents=True, exist_ok=True)
     tokenizer.save(path.as_posix())
+    return tokenizer
 
 
 def get_fast_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokenizerFast:
@@ -168,15 +164,23 @@ def get_fast_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokenizerFas
 def main(model: str) -> None:
     om = OutputManager()
     tokenizers_path = om.tokenizers
-    files = list(om.disassemble.rglob("*.asm"))
-    tokenizer = get_tokenizer(tokenizers_path, "WordLevel", files)
+    files = list(om.pre_normalized.rglob("*.asm"))
+    tokenizer = get_tokenizer(tokenizers_path, model, files)
+
+
+def debug() -> None:
+    main("WordLevel")
 
 
 def cli() -> None:
     parser = ArgumentParser()
+    parser.add_argument("--debug", action="store_true")
     parser.add_argument("--model", type=str, choices=["WordLevel", "WordPiece", "BPE", "Unigram"])
     args = parser.parse_args()
-    main(args.model)
+    if args.debug:
+        debug()
+    else:
+        main(args.model)
 
 
 if __name__ == "__main__":

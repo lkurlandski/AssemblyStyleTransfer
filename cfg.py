@@ -23,8 +23,17 @@ EOS = "<EOS>"
 ADR = "<ADR>"
 STR = "<STR>"
 VAR = "<VAR>"
-SYM = "<SIM>"
-SPECIALS = [UNK, MSK, PAD, SEP, CLS, BOS, EOS, ADR, STR, VAR, SYM]
+SYM = "<SYM>"
+FCN = "<FCN>"
+ARG = "<ARG>"
+SUB = "<SUB>"
+ASM = "<ASM>"
+VTABLE = "<VTABLE>"
+SWITCH = "<SWITCH>"
+CASE = "<CASE>"
+NUM = "<NUM>"
+
+SPECIALS = [UNK, MSK, PAD, SEP, CLS, BOS, EOS, ADR, STR, VAR, SYM, FCN, ARG, SUB, ASM, VTABLE, SWITCH, CASE, NUM]
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

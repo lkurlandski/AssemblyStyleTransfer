@@ -182,6 +182,7 @@ class OutputManager:
         self.data = self.root / "data"
         self.output = self.root / "output"
 
+        # prepare paths
         self.download_sorel = self.data / "download_sorel"
         self.download_windows = self.data / "download_windows"
         self.extract = self.data / "extract"
@@ -189,43 +190,51 @@ class OutputManager:
         self.filter = self.data / "filter"
         self.parse = self.data / "parse"
         self.disassemble = self.data / "disassemble"
+        self.pre_normalized = self.data / "pre_normalized"
+
+        # pretrain paths
+        self.pretrain = self.data / "pretrain"
+        self.pseudosupervised = self.data / "pseudosupervised"
+        self.models = self.output / "models"
+        self.encoder = self.models / "encoder"
+        self.decoder = self.models / "decoder"
+        # train paths
+        # self.models
+        self.pseudo_supervised = self.models / "pseudo_supervised"
+        self.supervised = self.models / "supervised"
+        self.unsupervised = self.models / "unsupervised"
+
+        # chop paths
         self.snippets = self.data / "snippets"
         self.snippets_mal = self.snippets / "mal"
         self.snippets_ben = self.snippets / "ben"
-        self.pretrain = self.data / "pretrain"
-        self.pseudosupervised = self.data / "pseudosupervised"
 
         self.bounds_file = self.output / "bounds.csv"
         self.bounds_full_file = self.output / "bounds_full.csv"
         self.summary_file = self.output / "summary.json"
         self.tokenizers = self.output / "tokenizers"
-        self.models = self.output / "models"
-        self.encoder = self.models / "encoder"
-        self.decoder = self.models / "decoder"
-        self.pseudo_supervised = self.models / "pseudo_supervised"
-        self.supervised = self.models / "supervised"
-        self.unsupervised = self.models / "unsupervised"
 
-    def mkdir(self, *, exist_ok: bool = False, parents: bool = False) -> None:
-        self.root.mkdir(exist_ok=exist_ok, parents=parents)
-        self.data.mkdir(exist_ok=exist_ok, parents=parents)
-        self.output.mkdir(exist_ok=exist_ok, parents=parents)
-        self.download_sorel.mkdir(exist_ok=exist_ok, parents=parents)
-        self.download_windows.mkdir(exist_ok=exist_ok, parents=parents)
-        self.extract.mkdir(exist_ok=exist_ok, parents=parents)
-        self.unpack.mkdir(exist_ok=exist_ok, parents=parents)
-        self.filter.mkdir(exist_ok=exist_ok, parents=parents)
-        self.parse.mkdir(exist_ok=exist_ok, parents=parents)
-        self.disassemble.mkdir(exist_ok=exist_ok, parents=parents)
-        self.snippets.mkdir(exist_ok=exist_ok, parents=parents)
-        self.snippets_mal.mkdir(exist_ok=exist_ok, parents=parents)
-        self.snippets_ben.mkdir(exist_ok=exist_ok, parents=parents)
-        self.pretrain.mkdir(exist_ok=exist_ok, parents=parents)
-        self.pseudosupervised.mkdir(exist_ok=exist_ok, parents=parents)
-        self.tokenizers.mkdir(exist_ok=exist_ok, parents=parents)
-        self.models.mkdir(exist_ok=exist_ok, parents=parents)
-        self.encoder.mkdir(exist_ok=exist_ok, parents=parents)
-        self.decoder.mkdir(exist_ok=exist_ok, parents=parents)
-        self.pseudo_supervised.mkdir(exist_ok=exist_ok, parents=parents)
-        self.supervised.mkdir(exist_ok=exist_ok, parents=parents)
-        self.unsupervised.mkdir(exist_ok=exist_ok, parents=parents)
+    @property
+    def prepare_paths(self) -> list[Path]:
+        return [
+            self.download_sorel,
+            self.download_windows,
+            self.extract,
+            self.unpack,
+            self.filter,
+            self.parse,
+            self.disassemble,
+            self.pre_normalized,
+        ]
+
+    def mkdir_prepare_paths(self, *, exist_ok: bool = False, parents: bool = False) -> None:
+        for p in self.prepare_paths:
+            p.mkdir(exist_ok=exist_ok, parents=parents)
+
+    def rmdir_prepare_paths(self, *, ignore_errors: bool = True) -> None:
+        for p in self.prepare_paths:
+            try:
+                p.rmdir()
+            except OSError as err:
+                if not ignore_errors:
+                    raise err

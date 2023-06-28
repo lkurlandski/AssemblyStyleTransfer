@@ -100,10 +100,7 @@ def train_tokenizer(dataset: Dataset = None, model: str = "WordLevel", path: Pat
 
 
 def get_tokenizer(
-    path: Path = None,
-    model: str = "WordLevel",
-    dataset: Dataset = None,
-    use_cache: bool = True,
+    path: Path = None, model: str = "WordLevel", dataset: Dataset = None, use_cache: bool = True
 ) -> Tokenizer:
     if path is not None and path.exists() and use_cache:
         print(f"Using tokenizer from {path.as_posix()}")
@@ -139,8 +136,7 @@ def get_pretrained_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokeni
 
 # TODO: integrate assembly task into model-specific tokenizers
 def get_pretrained_tokenizer_specific(
-    tokenizer_file: Path,
-    config: PretrainedConfig,
+    tokenizer_file: Path, config: PretrainedConfig
 ) -> PreTrainedTokenizerFast | PreTrainedTokenizer:
     raise NotImplementedError()
     if isinstance(config, transformers.BertConfig):  # pylint: disable=unreachable
@@ -192,9 +188,7 @@ def get_processed_pretraining_dataset(
 
 
 def get_unsupervised_dataset(
-    mal_files: Collection[Path],
-    ben_files: Collection[Path],
-    mode: tp.Literal["min", "repeat", "empty"],
+    mal_files: Collection[Path], ben_files: Collection[Path], mode: tp.Literal["min", "repeat", "empty"]
 ) -> Dataset:
     FILL = ""
 
@@ -221,10 +215,7 @@ def get_unsupervised_dataset(
 
 
 def get_processed_pseudosupervised_dataset(
-    dataset: Dataset,
-    tokenizer: PreTrainedTokenizerFast,
-    load_from_cache_file: bool = True,
-    **kwargs,
+    dataset: Dataset, tokenizer: PreTrainedTokenizerFast, load_from_cache_file: bool = True, **kwargs
 ) -> Dataset:
     def fn(batch):
         return tokenizer(text=batch["mal"], text_target=batch["ben"], **kwargs)
@@ -234,10 +225,7 @@ def get_processed_pseudosupervised_dataset(
 
 
 def get_processed_unsupervised_dataset(
-    dataset: Dataset,
-    tokenizer: PreTrainedTokenizerFast,
-    load_from_cache_file: bool = True,
-    **kwargs,
+    dataset: Dataset, tokenizer: PreTrainedTokenizerFast, load_from_cache_file: bool = True, **kwargs
 ) -> Dataset:
     def fn(batch):
         batch_encoding = tokenizer(text=batch["mal"], text_target=batch["ben"], **kwargs)
@@ -307,11 +295,7 @@ def main(
             tokenized_dataset = Dataset.load_from_disk(paths.pretrain.as_posix())
         else:
             tokenized_dataset = get_processed_pretraining_dataset(
-                dataset,
-                fast_tokenizer,
-                data_args.use_cache,
-                truncation=True,
-                padding="longest",
+                dataset, fast_tokenizer, data_args.use_cache, truncation=True, padding="longest"
             )
             if not data_args.clear_cache:
                 tokenized_dataset.save_to_disk(paths.pretrain.as_posix())
@@ -370,13 +354,7 @@ def main(
 
 
 def debug() -> None:
-    main(
-        OutputManager("./data"),
-        TokenizerArgs(),
-        DatasetArgs(),
-        False,
-        True,
-    )
+    main(OutputManager("./data"), TokenizerArgs(), DatasetArgs(), False, True)
 
 
 def cli() -> None:
@@ -401,16 +379,8 @@ def cli() -> None:
 
     main(
         OutputManager(),
-        TokenizerArgs(
-            args.model,
-            args.model_max_length,
-            not args.no_cache_tokenizer,
-        ),
-        DatasetArgs(
-            args.test_size,
-            not args.no_cache_dataset,
-            args.subsample,
-        ),
+        TokenizerArgs(args.model, args.model_max_length, not args.no_cache_tokenizer),
+        DatasetArgs(args.test_size, not args.no_cache_dataset, args.subsample),
         args.pretrain,
         args.pseudosupervised,
         args.unsupervised,
