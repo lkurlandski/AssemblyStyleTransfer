@@ -1,5 +1,15 @@
 """
-Acquire data for learning, including downloading and disassembling (Network-intensive).
+Acquire data for learning, including downloading and disassembling (Network-intensive & CPU intensive).
+
+This script is a little complicated. It is intended to be run using stupid parallelization:
+    - One worker should be responsible for downloading, eg,
+        python prepare.py --_32_bit --responsibility=None
+    - Subsequent workers should be responsible for disassembling select files that begin with `responsibility`
+        python prepare.py --_32_bit --no_download --responsibility=000
+        python prepare.py --_32_bit --no_download --responsibility=001
+        python prepare.py --_32_bit --no_download --responsibility=002
+        ...
+        python prepare.py --_32_bit --no_download --responsibility=00f
 """
 
 from argparse import ArgumentParser
@@ -50,7 +60,9 @@ WAIT = 5
 
 WARNS = [("Functions with same addresses detected", False), ("Function addresses improperly parsed", False)]
 
+CHUNK = 1024
 NORMALIZER = get_pre_normalizer()
+ALREADY_DONE = set()
 
 
 def pre_normalize(f: Path, dest_path: Path) -> Path:
@@ -219,51 +231,54 @@ def extract(f: Path, dest_path: Path) -> Path:
     return f_out
 
 
-def download_sorel(dest_path: Path, n_files: int) -> None:
+def download_sorel(dest_path: Path, n_files: int) -> tp.Generator[Path, None, None]:
     print("Downloading SOREL...", flush=True)
 
+    yielded = set()
     command = f"{cfg.AWS} s3 cp {cfg.BUCKET} {dest_path} --recursive --no-sign-request --quiet"
     pro = subprocess.Popen(command, shell=True)
-    with tqdm(total=n_files) as pbar:
-        while pro.poll() is None:
-            n = sum(1 for _ in dest_path.iterdir())
-            if n >= n_files:
-                break
-            pbar.update(n)
+    while pro.poll() is None:
+        for p in dest_path.iterdir():
+            if p.suffix == "":
+                p.rename(p.with_suffix(".zlib"))
+            if p.name not in yielded and p.suffix == ".zlib":
+                yielded.add(p.name)
+                yield p
+        if len(yielded) >= n_files:
+            break
 
     time.sleep(WAIT)
     os.system("killall aws")
 
-    for f in dest_path.iterdir():
-        if f.suffix == "":
-            f.rename(f.with_suffix(".zlib"))
+    for p in dest_path.iterdir():
+        if p.suffix == "":
+            p.rename(p.with_suffix(".zlib"))
+            yield p
         else:
-            f.unlink()
-
-    for i, f in enumerate(dest_path.iterdir()):
-        if i >= n_files:
-            f.unlink()
+            p.unlink()
 
 
-def download_windows(dest_path: Path, n_files: int) -> None:
+def download_windows(dest_path: Path, n_files: int) -> tp.Generator[Path, None, None]:
     print("Downloading Windows...", flush=True)
 
+    yielded = set()
     dest_path.mkdir(exist_ok=True)
     command = f"scp {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}/"
     pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
-    with tqdm(total=n_files) as pbar:
-        while pro.poll() is None:
-            n = sum(1 for _ in dest_path.iterdir())
-            if n >= n_files:
-                break
-            pbar.update(n)
+    while pro.poll() is None:
+        for p in dest_path.iterdir():
+            if p.name not in yielded and p.suffix == ".exe":
+                yielded.add(p.name)
+                yield p
+        if len(yielded) >= n_files:
+            break
 
     time.sleep(WAIT)
     os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
 
-    for i, f in enumerate(dest_path.iterdir()):
-        if i >= n_files:
-            f.unlink()
+    for p in dest_path.iterdir():
+        if p.suffix == ".exe":
+            yield p
 
 
 def process_binary(om: OutputManager, f: Path, max_len: int, _16_bit: bool, _32_bit: bool, _64_bit: bool) -> None:
@@ -283,6 +298,31 @@ def process_binary(om: OutputManager, f: Path, max_len: int, _16_bit: bool, _32_
     return 0
 
 
+def has_file(path: Path, suffix: str = "") -> bool:
+    i = 0
+    for i, f in enumerate(path.iterdir()):
+        if f.suffix == suffix:
+            return True
+    return i == 0
+
+
+def is_responsible(p: Path, responsibility: str) -> bool:
+    if responsibility == "ALL":
+        return True
+    if responsibility == "None":
+        return False
+    return p.name[0 : len(responsibility)] == responsibility
+
+
+def no_download_file_iterable(om: OutputManager, responsibility: str) -> tp.Generator[Path, None, None]:
+
+    for p in chain(
+        (p for p in om.download_sorel.iterdir() if p.suffix == ".zlib" and is_responsible(p, responsibility)),
+        (p for p in om.download_windows.iterdir() if p.suffix == ".exe" and is_responsible(p, responsibility)),
+    ):
+        yield p
+
+
 def main(
     n_sorel_files: int = N_FILES,
     n_windows_files: int = N_FILES,
@@ -290,22 +330,35 @@ def main(
     _16_bit: bool = _16_BIT,
     _32_bit: bool = _32_BIT,
     _64_bit: bool = _64_BIT,
-    n_workers: int = 1,
+    no_download: bool = False,
+    responsibility: str = "ALL",
 ) -> None:
     assert _16_bit or _32_bit or _64_bit
     om = OutputManager()
     om.mkdir_prepare_paths(exist_ok=True, parents=True)
+    ALREADY_DONE.update(p.stem for p in OutputManager().pre_normalized.iterdir())
 
-    download_sorel(om.download_sorel, n_sorel_files)
-    download_windows(om.download_windows, n_windows_files)
- 
-    binaries = list(chain(om.download_windows.iterdir(), om.download_sorel.iterdir()))
-    shuffle(binaries)
-    iterable = [(deepcopy(om), f, max_len, _16_bit, _32_bit, _64_bit) for f in binaries]
-    with Pool(processes=n_workers) as pool:
-        pool.starmap(process_binary, iterable)
-    
-    om.rmdir_prepare_paths(ignore_errors=True)
+    if no_download:
+        file_iterable = no_download_file_iterable(om, responsibility)
+    else:
+        file_iterable = chain(
+            download_sorel(om.download_sorel, n_sorel_files), download_windows(om.download_windows, n_windows_files)
+        )
+
+    while True:
+        for f in tqdm(file_iterable, total=n_sorel_files + n_windows_files):
+            if not is_responsible(f, responsibility):
+                continue
+            if f.stem in ALREADY_DONE:
+                continue
+            process_binary(om, f, max_len, _16_bit, _32_bit, _64_bit)
+
+        if no_download:
+            file_iterable = no_download_file_iterable(om, responsibility)
+        else:
+            break
+
+    # om.rmdir_prepare_paths(ignore_errors=True)
 
 
 def debug() -> None:
@@ -322,7 +375,8 @@ def cli() -> None:
     parser.add_argument("--_16_bit", action="store_true")
     parser.add_argument("--_32_bit", action="store_true")
     parser.add_argument("--_64_bit", action="store_true")
-    parser.add_argument("--n_workers", type=int, default=1)
+    parser.add_argument("--no_download", action="store_true")
+    parser.add_argument("--responsibility", type=str)
 
     args = parser.parse_args()
 
@@ -330,7 +384,16 @@ def cli() -> None:
         debug()
         return
 
-    main(args.n_sorel_files, args.n_windows_files, args.max_len, args._16_bit, args._32_bit, args._64_bit, args.n_workers)
+    main(
+        args.n_sorel_files,
+        args.n_windows_files,
+        args.max_len,
+        args._16_bit,
+        args._32_bit,
+        args._64_bit,
+        args.no_download,
+        args.responsibility,
+    )
 
 
 if __name__ == "__main__":
