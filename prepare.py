@@ -4,15 +4,18 @@ Acquire data for learning, including downloading and disassembling (Network-inte
 
 from argparse import ArgumentParser
 from collections.abc import Collection
+from copy import deepcopy
 import csv
 from dataclasses import dataclass
 from collections import defaultdict
 from itertools import chain
 import os
 import json
+from multiprocessing import Pool
 from pathlib import Path
 import pefile as pe
 from pprint import pprint
+from random import shuffle
 import re
 import shutil
 import signal
@@ -38,7 +41,7 @@ from tokenization import get_pre_normalizer
 from utils import OutputManager
 
 
-N_FILES = 100
+N_FILES = 25
 MAX_LEN = 1e6
 _16_BIT = False
 _32_BIT = True
@@ -47,14 +50,15 @@ WAIT = 5
 
 WARNS = [("Functions with same addresses detected", False), ("Function addresses improperly parsed", False)]
 
+NORMALIZER = get_pre_normalizer()
+
 
 def pre_normalize(f: Path, dest_path: Path) -> Path:
-    normalizer = get_pre_normalizer()
     d_out = dest_path / f.parent.name
     d_out.mkdir(exist_ok=True)
     f_out = d_out / f.name
     with open(f) as handle:
-        out_str = normalizer.normalize_str(handle.read())
+        out_str = NORMALIZER.normalize_str(handle.read())
     with open(f_out, "w") as handle:
         handle.write(out_str)
     f.unlink()
@@ -163,7 +167,7 @@ def filter_(
     _16_bit: bool = _16_BIT,
     _32_bit: bool = _32_BIT,
     _64_bit: bool = _64_BIT,
-) -> Path:
+) -> tuple[Path, int]:
     def ret(keep: bool):
         f_out = dest_path / f.name
         if keep:
@@ -262,6 +266,23 @@ def download_windows(dest_path: Path, n_files: int) -> None:
             f.unlink()
 
 
+def process_binary(om: OutputManager, f: Path, max_len: int, _16_bit: bool, _32_bit: bool, _64_bit: bool) -> None:
+    if f.suffix == ".zlib":
+        f = extract(f, om.extract)
+        if not f.exists():
+            return 1
+    f = unpack(f, om.unpack)
+    if not f.exists():
+        return 2
+    f, _ = filter_(f, om.filter, max_len, _16_bit, _32_bit, _64_bit)
+    if not f.exists():
+        return 3
+    files = disassemble(f, om.disassemble)
+    for f in files:
+        f = pre_normalize(f, om.pre_normalized)
+    return 0
+
+
 def main(
     n_sorel_files: int = N_FILES,
     n_windows_files: int = N_FILES,
@@ -269,6 +290,7 @@ def main(
     _16_bit: bool = _16_BIT,
     _32_bit: bool = _32_BIT,
     _64_bit: bool = _64_BIT,
+    n_workers: int = 1,
 ) -> None:
     assert _16_bit or _32_bit or _64_bit
     om = OutputManager()
@@ -276,34 +298,13 @@ def main(
 
     download_sorel(om.download_sorel, n_sorel_files)
     download_windows(om.download_windows, n_windows_files)
-
-    stats = [0, 0, 0, 0]
-    filter_codes = defaultdict(lambda: 0)
-
-    files = chain(om.download_sorel.iterdir(), om.download_windows.iterdir())
-    total = n_sorel_files + n_windows_files
-    for i, f in tqdm(enumerate(files), total=total):
-        if i < n_sorel_files:
-            f = extract(f, om.extract)
-            if not f.exists():
-                continue
-        stats[0] += 1
-        f = unpack(f, om.unpack)
-        if not f.exists():
-            continue
-        stats[1] += 1
-        f, filter_code = filter_(f, om.filter, max_len, _16_bit, _32_bit, _64_bit)
-        if not f.exists():
-            filter_codes[filter_code] += 1
-            continue
-        stats[2] += 1
-        files = disassemble(f, om.disassemble)
-        for f in files:
-            f = pre_normalize(f, om.pre_normalized)
-        stats[3] += 1
-
-    pprint(stats)
-    pprint(filter_codes)
+ 
+    binaries = list(chain(om.download_windows.iterdir(), om.download_sorel.iterdir()))
+    shuffle(binaries)
+    iterable = [(deepcopy(om), f, max_len, _16_bit, _32_bit, _64_bit) for f in binaries]
+    with Pool(processes=n_workers) as pool:
+        pool.starmap(process_binary, iterable)
+    
     om.rmdir_prepare_paths(ignore_errors=True)
 
 
@@ -321,6 +322,7 @@ def cli() -> None:
     parser.add_argument("--_16_bit", action="store_true")
     parser.add_argument("--_32_bit", action="store_true")
     parser.add_argument("--_64_bit", action="store_true")
+    parser.add_argument("--n_workers", type=int, default=1)
 
     args = parser.parse_args()
 
@@ -328,7 +330,7 @@ def cli() -> None:
         debug()
         return
 
-    main(args.n_sorel_files, args.n_windows_files, args.max_len, args._16_bit, args._32_bit, args._64_bit)
+    main(args.n_sorel_files, args.n_windows_files, args.max_len, args._16_bit, args._32_bit, args._64_bit, args.n_workers)
 
 
 if __name__ == "__main__":
