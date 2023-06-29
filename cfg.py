@@ -2,8 +2,13 @@
 Globals
 """
 
+import os
+
 import capstone
 import torch
+
+
+N_WORKERS = len(os.sched_getaffinity(0)) - 1
 
 
 BUCKET = "s3://sorel-20m/09-DEC-2020/binaries/"
@@ -20,6 +25,8 @@ SEP = "<SEP>"
 CLS = "<CLS>"
 BOS = "<BOS>"
 EOS = "<EOS>"
+SPECIALS = [UNK, MSK, PAD, SEP, CLS, BOS, EOS]
+
 ADR = "<ADR>"
 STR = "<STR>"
 VAR = "<VAR>"
@@ -32,8 +39,7 @@ VTABLE = "<VTABLE>"
 SWITCH = "<SWITCH>"
 CASE = "<CASE>"
 NUM = "<NUM>"
-
-SPECIALS = [UNK, MSK, PAD, SEP, CLS, BOS, EOS, ADR, STR, VAR, SYM, FCN, ARG, SUB, ASM, VTABLE, SWITCH, CASE, NUM]
+NONSPECIALS = [ADR, STR, VAR, SYM, FCN, ARG, SUB, ASM, VTABLE, CASE, NUM]
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

@@ -7,6 +7,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from enum import Enum
 from itertools import cycle, islice, tee, zip_longest
+import os
 from pathlib import Path
 import re
 import sys
@@ -22,13 +23,22 @@ import cfg
 from utils import mem, OutputManager
 
 
-def get_raw_assembly_dataset(files: Collection[Path]) -> Dataset:
+MIN_LINES = 4
+
+
+def get_raw_assembly_dataset(
+    files: Collection[Path],
+    num_proc: int = cfg.N_WORKERS,
+    min_lines: int = float("-inf"),
+    max_lines: int = float("inf"),
+) -> Dataset:
     def gen():
         for f in files:
             snippet = f.read_text()
-            yield {"text": snippet}
+            if min_lines <= snippet.count("\n") <= max_lines:
+                yield {"text": snippet}
 
-    dataset = Dataset.from_generator(gen)
+    dataset = Dataset.from_generator(gen, num_proc=num_proc)
     return dataset
 
 
@@ -90,13 +100,13 @@ def get_model(model: str) -> Tokenizer:
 
 def get_trainer(model: models.Model, vocab_size: int = None) -> trainers.Trainer:
     if isinstance(model, models.WordLevel):
-        return trainers.WordLevelTrainer(vocab_size)  # for some reason, adding special_tokens here fucks everything up
+        return trainers.WordLevelTrainer(vocab_size=vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.WordPiece):
-        return trainers.WordPieceTrainer(vocab_size, special_tokens=cfg.SPECIALS)
+        return trainers.WordPieceTrainer(vocab_size=vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.BPE):
-        return trainers.BpeTrainer(vocab_size, special_tokens=cfg.SPECIALS)
+        return trainers.BpeTrainer(vocab_size=vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.Unigram):
-        return trainers.UnigramTrainer(vocab_size, unk_token=cfg.UNK, special_tokens=cfg.SPECIALS)
+        return trainers.UnigramTrainer(vocab_size=vocab_size, unk_token=cfg.UNK, special_tokens=cfg.SPECIALS)
     raise ValueError()
 
 
@@ -108,7 +118,7 @@ def get_post_processor() -> processors.TemplateProcessing:
     )
 
 
-def get_added_special_token(s: str) -> tokenizers.AddedToken:
+def get_added_token(s: str) -> tokenizers.AddedToken:
     return tokenizers.AddedToken(s, lstrip=True, rstrip=True, normalized=False)
 
 
@@ -121,23 +131,28 @@ def get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
     return (Path(tokenizers_path) / model).with_suffix(".json")
 
 
-def get_tokenizer(tokenizers_path: Path, model: Path, files: Collection[Path] = None) -> Tokenizer:
+def get_tokenizer(
+    tokenizers_path: Path, model: Path, files: Collection[Path] = None, batch_size: int = 512, vocab_size: int = None
+) -> Tokenizer:
     path = get_tokenizer_file(tokenizers_path, model)
     print(f"Tokenizer file: {path.as_posix()}", flush=True)
     if path.exists():
         print(f"Found cached tokenizer.", flush=True)
         return Tokenizer.from_file(path.as_posix())
 
-    print(f"Training new tokenizer from {len(files)} files ({round(mem(files), 1)}G).")
-    dataset = get_raw_assembly_dataset(files)
+    print(f"Found {len(files)} files ({round(mem(files), 1)}G).")
+    dataset = get_raw_assembly_dataset(files, min_lines=MIN_LINES)
+    print(f"Built a dataset with {dataset.n_rows} examples.")
     model = get_model(model)
-    trainer = get_trainer(model)
+    trainer = get_trainer(model, vocab_size)
     tokenizer = Tokenizer(model)
     tokenizer.normalizer = get_normalizer()
     tokenizer.pre_tokenizer = get_pre_tokenizer()
     tokenizer.post_processor = get_post_processor()
-    tokenizer.add_special_tokens([get_added_special_token(s) for s in cfg.SPECIALS])
-    tokenizer.train_from_iterator(batch_iterator(dataset), trainer, length=len(dataset))
+    tokenizer.add_special_tokens(cfg.SPECIALS)
+    tokenizer.add_tokens([get_added_token(s) for s in cfg.NONSPECIALS])
+    print(f"Training new tokenizer with {batch_size=} and {len(os.sched_getaffinity(0))} logical cores.")
+    tokenizer.train_from_iterator(batch_iterator(dataset, batch_size), trainer, length=len(dataset))
     path.parent.mkdir(parents=True, exist_ok=True)
     tokenizer.save(path.as_posix())
     return tokenizer
@@ -161,11 +176,11 @@ def get_fast_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokenizerFas
     )
 
 
-def main(model: str) -> None:
+def main(model: str, batch_size: int = 512, vocab_size: int = None) -> None:
     om = OutputManager()
     tokenizers_path = om.tokenizers
     files = list(om.pre_normalized.rglob("*.asm"))
-    tokenizer = get_tokenizer(tokenizers_path, model, files)
+    tokenizer = get_tokenizer(tokenizers_path, model, files, batch_size, vocab_size)
 
 
 def debug() -> None:
@@ -176,11 +191,13 @@ def cli() -> None:
     parser = ArgumentParser()
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--model", type=str, choices=["WordLevel", "WordPiece", "BPE", "Unigram"])
+    parser.add_argument("--batch_size", type=int, default=512)
+    parser.add_argument("--vocab_size", default=-1)
     args = parser.parse_args()
     if args.debug:
         debug()
     else:
-        main(args.model)
+        main(args.model, args.batch_size, int(args.vocab_size) if args.vocab_size else None)
 
 
 if __name__ == "__main__":
