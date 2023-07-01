@@ -37,6 +37,7 @@ import numpy as np
 from datasets import load_dataset
 from huggingface_hub import Repository, create_repo
 import torch
+from torch import tensor
 from tqdm import tqdm
 
 from datasets import Dataset, DatasetDict
@@ -51,6 +52,7 @@ from transformers import (
     is_tensorboard_available,
     set_seed,
 )
+import transformers
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
 from transformers.models.bart.modeling_bart import shift_tokens_right
 from transformers.utils import get_full_repo_name, send_example_telemetry
@@ -83,6 +85,8 @@ import evaluate
 rouge = evaluate.load("rouge")
 
 import numpy as np
+
+DATASET_PATH = Path("output/datasets/bart")
 
 
 def get_compute_metric_fn(tokenizer):
@@ -213,25 +217,6 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
-    # dataset_name: Optional[str] = field(
-    #     default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    # )
-    # dataset_config_name: Optional[str] = field(
-    #     default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
-    # )
-    # train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
-    # validation_file: Optional[str] = field(
-    #     default=None,
-    #     metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
-    # )
-    # train_ref_file: Optional[str] = field(
-    #     default=None,
-    #     metadata={"help": "An optional input train ref data file for whole word masking in Chinese."},
-    # )
-    # validation_ref_file: Optional[str] = field(
-    #     default=None,
-    #     metadata={"help": "An optional input validation ref data file for whole word masking in Chinese."},
-    # )
     overwrite_cache: bool = field(
         default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
     )
@@ -264,18 +249,6 @@ class DataTrainingArguments:
         default=3.0, metadata={"help": "Mean of Poisson distribution used to generate span-lengths to be masked"}
     )
 
-    # def __post_init__(self):
-    #     if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-    #         raise ValueError("Need either a dataset name or a training/validation file.")
-    #     else:
-    #         if self.train_file is not None:
-    #             extension = self.train_file.split(".")[-1]
-    #             assert extension in ["csv", "json", "txt"], "`train_file` should be a csv, a json or a txt file."
-    #         if self.validation_file is not None:
-    #             extension = self.validation_file.split(".")[-1]
-    #             assert extension in ["csv", "json", "txt"], "`validation_file` should be a csv, a json or a txt file."
-
-
 @dataclass
 class DataCollatorForBartDenoisingLM:
     """
@@ -297,6 +270,9 @@ class DataCollatorForBartDenoisingLM:
             The decoder start token id of the model
     """
 
+    max_length: int
+    padding = "max_length"
+    pad_to_multiple_of = None
     tokenizer: PreTrainedTokenizerBase
     decoder_start_token_id: int
     mask_ratio: float = 0.3
@@ -312,28 +288,39 @@ class DataCollatorForBartDenoisingLM:
 
     def __call__(self, examples: List[Dict[str, List[int]]]) -> BatchEncoding:
         # convert list to dict and tensorize input
-        batch = BatchEncoding(
-            {k: np.array([examples[i][k] for i in range(len(examples))]) for k, v in examples[0].items()}
+        encodings = [BatchEncoding({"input_ids": examples[i]["input_ids"]}) for i in range(len(examples))]
+        batch = self.tokenizer.pad(
+            encodings,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
         )
-        batch["labels"] = batch["input_ids"].copy()
+        # batch = BatchEncoding(
+        #     {k: np.array([examples[i][k] for i in range(len(examples))]) for k, v in examples[0].items()}
+        # )
+        batch["labels"] = torch.clone(batch["input_ids"])
         batch["decoder_input_ids"] = shift_tokens_right(
             batch["labels"], self.tokenizer.pad_token_id, self.decoder_start_token_id
         )
         # permuting sentences
         do_permute = False
         if self.permute_sentence_ratio > 0.0:
-            batch["input_ids"] = self.permute_sentences(batch["input_ids"])
+            batch["input_ids"] = tensor(self.permute_sentences(batch["input_ids"].cpu().detach().numpy()))
             do_permute = True
 
         # masking span of tokens (text infilling in the paper)
         if self.mask_ratio:
-            batch["input_ids"], batch["labels"] = self.span_mask_tokens(
-                batch["input_ids"], batch["labels"], do_permute
+            tmp_input_ids, tmp_labels = self.span_mask_tokens(
+                batch["input_ids"].cpu().detach().numpy(),
+                batch["labels"].cpu().detach().numpy(),
+                do_permute,
             )
+            batch["input_ids"], batch["labels"] = tensor(tmp_input_ids), tensor(tmp_labels)
 
         # ignore pad tokens
-        batch["attention_mask"] = (batch["input_ids"] != self.tokenizer.pad_token_id).astype(int)
-        batch["decoder_attention_mask"] = (batch["decoder_input_ids"] != self.tokenizer.pad_token_id).astype(int)
+        batch["attention_mask"] = (batch["input_ids"] != self.tokenizer.pad_token_id).int()
+        batch["decoder_attention_mask"] = (batch["decoder_input_ids"] != self.tokenizer.pad_token_id).int()
         return batch
 
     def permute_sentences(self, input_ids):
@@ -374,6 +361,7 @@ class DataCollatorForBartDenoisingLM:
         """
         Sampling text spans with span lengths drawn from a Poisson distribution and masking them.
         """
+        
         special_tokens_mask_labels = [
             self.tokenizer.get_special_tokens_mask(val, already_has_special_tokens=True) for val in labels.tolist()
         ]
@@ -461,21 +449,6 @@ def generate_batch_splits(samples_idx: np.ndarray, batch_size: int, drop_last=Tr
     return samples_idx
 
 
-# def write_train_metric(summary_writer, train_metrics, train_time, step):
-#     summary_writer.scalar("train_time", train_time, step)
-
-#     train_metrics = get_metrics(train_metrics)
-#     for key, vals in train_metrics.items():
-#         tag = f"train_{key}"
-#         for i, val in enumerate(vals):
-#             summary_writer.scalar(tag, val, step - len(vals) + i + 1)
-
-
-# def write_eval_metric(summary_writer, eval_metrics, step):
-#     for metric_name, value in eval_metrics.items():
-#         summary_writer.scalar(f"eval_{metric_name}", value, step)
-
-
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -520,77 +493,45 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # Handle the repository creation
-    if training_args.push_to_hub:
-        if training_args.hub_model_id is None:
-            repo_name = get_full_repo_name(
-                Path(training_args.output_dir).absolute().name, token=training_args.hub_token
-            )
-        else:
-            repo_name = training_args.hub_model_id
-        create_repo(repo_name, exist_ok=True, token=training_args.hub_token)
-        repo = Repository(training_args.output_dir, clone_from=repo_name, token=training_args.hub_token)
-
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub).
     #
+    
+    SUBSET = 1000
+    DOWNSCALE = 4
+    MAX_SEQ_LENGTH = 1024 // DOWNSCALE
 
     om = OutputManager()
     try:
         print("Loading from disk")
-        datasets = DatasetDict.load_from_disk("tmp/raw")
+        datasets = DatasetDict.load_from_disk((DATASET_PATH / "raw").as_posix())
     except FileNotFoundError:
         print("Generating dataset")
         datasets = tokenization.get_raw_assembly_dataset(list(om.pre_normalized.rglob("*.asm")), min_lines=4).train_test_split()
-        datasets.save_to_disk("tmp/raw")
+        datasets.save_to_disk((DATASET_PATH / "raw").as_posix())
     tokenizer = tokenization.get_tokenizer(om.tokenizers, "WordLevel")
-    tokenizer = tokenization.get_fast_tokenizer(tokenizer)
+    tokenizer = tokenization.get_fast_tokenizer(
+        tokenizer,
+        model_max_length=MAX_SEQ_LENGTH,
+        padding_side="right",
+    )
+    datasets["train"] = datasets["train"].select(range(SUBSET))
+    datasets["test"] = datasets["test"].select(range(SUBSET))
     
     print(datasets)
     print(tokenizer)
 
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
-
-    # Load pretrained model and tokenizer
-
-    # if model_args.tokenizer_name:
-    #     tokenizer = AutoTokenizer.from_pretrained(
-    #         model_args.tokenizer_name,
-    #         cache_dir=model_args.cache_dir,
-    #         use_fast=model_args.use_fast_tokenizer,
-    #         use_auth_token=True if model_args.use_auth_token else None,
-    #     )
-    # elif model_args.model_name_or_path:
-    #     tokenizer = AutoTokenizer.from_pretrained(
-    #         model_args.model_name_or_path,
-    #         cache_dir=model_args.cache_dir,
-    #         use_fast=model_args.use_fast_tokenizer,
-    #         use_auth_token=True if model_args.use_auth_token else None,
-    #     )
-    # else:
-    #     raise ValueError(
-    #         "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-    #         "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-    #     )
-
-    if model_args.config_name:
-        config = BartConfig.from_pretrained(
-            model_args.config_name,
-            cache_dir=model_args.cache_dir,
-            vocab_size=len(tokenizer),
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
-    elif model_args.model_name_or_path:
-        config = BartConfig.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=model_args.cache_dir,
-            use_auth_token=True if model_args.use_auth_token else None,
-        )
-    else:
-        config = CONFIG_MAPPING[model_args.model_type]()
-        logger.warning("You are instantiating a new config instance from scratch.")
+    config = BartConfig(
+        vocab_size=len(tokenizer),
+        max_position_embeddings=MAX_SEQ_LENGTH,
+        encoder_layers=12 // DOWNSCALE,
+        encoder_ffn_dim=4096 // DOWNSCALE,
+        encoder_attention_heads=16 // DOWNSCALE,
+        decoder_layers=12 // DOWNSCALE,
+        decoder_ffn_dim=4096 // DOWNSCALE,
+        d_model=1024 // DOWNSCALE,
+    )
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
@@ -599,14 +540,6 @@ def main():
     else:
         column_names = datasets["test"].column_names
     text_column_name = "text" if "text" in column_names else column_names[0]
-
-    max_seq_length = float("inf")
-    if isinstance(data_args.max_seq_length, int):
-        max_seq_length = data_args.max_seq_length
-    if isinstance(tokenizer.model_max_length, int):
-        max_seq_length = min(max_seq_length, tokenizer.model_max_length)
-    if max_seq_length == float("inf"):
-        max_seq_length = None
 
     # Use Punkt Sentence Tokenizer to divide a document into a list of sentences
     # nltk.download("punkt")
@@ -618,7 +551,10 @@ def main():
         new_text = tokenizer.bos_token + f"{tokenizer.pad_token}".join(sents) + tokenizer.eos_token
         return {"text": new_text}
     
-    if not Path("tmp/tokenized").exists():
+    p = (DATASET_PATH / "split")
+    if p.exists():
+        split_datasets = DatasetDict.load_from_disk(p.as_posix())
+    else:
         split_datasets = datasets.map(
             sentence_split_function,
             batched=False,
@@ -626,15 +562,17 @@ def main():
             remove_columns=column_names,
             load_from_cache_file=not data_args.overwrite_cache,
         )
+        split_datasets.save_to_disk(p.as_posix())
 
     # Tokenize every text, then concatenate them together before splitting them in smaller parts.
     # Since we make sure that all sequences are of the same length, no attention_mask is needed.
     def tokenize_function(examples):
         return tokenizer(examples[text_column_name], add_special_tokens=False, return_attention_mask=False)
 
-    try:
-        tokenized_datasets = DatasetDict.load_from_disk("tmp/tokenized")
-    except FileNotFoundError:
+    p = (DATASET_PATH / "tokenized")
+    if p.exists():
+        tokenized_datasets = DatasetDict.load_from_disk(p.as_posix())
+    else:
         tokenized_datasets = split_datasets.map(
             tokenize_function,
             batched=True,
@@ -642,7 +580,7 @@ def main():
             remove_columns=text_column_name,
             load_from_cache_file=not data_args.overwrite_cache,
         )
-        tokenized_datasets.save_to_disk("tmp/tokenized")
+        tokenized_datasets.save_to_disk(p.as_posix())
 
     # Main data processing function that will concatenate all texts from our dataset and generate chunks of
     # max_seq_length.
@@ -652,11 +590,11 @@ def main():
         total_length = len(concatenated_examples[list(examples.keys())[0]])
         # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
         # customize this part to your needs.
-        if total_length >= max_seq_length:
-            total_length = (total_length // max_seq_length) * max_seq_length
+        if total_length >= MAX_SEQ_LENGTH:
+            total_length = (total_length // MAX_SEQ_LENGTH) * MAX_SEQ_LENGTH
         # Split by chunks of max_len.
         result = {
-            k: [t[i : i + max_seq_length] for i in range(0, total_length, max_seq_length)]
+            k: [t[i : i + MAX_SEQ_LENGTH] for i in range(0, total_length, MAX_SEQ_LENGTH)]
             for k, t in concatenated_examples.items()
         }
         return result
@@ -668,7 +606,7 @@ def main():
     # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
     # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
     try:
-        tokenized_datasets = DatasetDict.load_from_disk("tmp/grouped")
+        tokenized_datasets = DatasetDict.load_from_disk((DATASET_PATH / "grouped").as_posix())
     except FileNotFoundError:
         tokenized_datasets = tokenized_datasets.map(
             group_texts,
@@ -676,7 +614,7 @@ def main():
             num_proc=data_args.preprocessing_num_workers,
             load_from_cache_file=not data_args.overwrite_cache,
         )
-        tokenized_datasets.save_to_disk("tmp/grouped")
+        tokenized_datasets.save_to_disk((DATASET_PATH / "grouped").as_posix())
 
     # Initialize our training
     # rng = jax.random.PRNGKey(training_args.seed)
@@ -688,27 +626,44 @@ def main():
         # seed=training_args.seed,
         # dtype=getattr(jnp, model_args.dtype),
     )
+    
+    # tokenizer.set_truncation_and_padding(
+    #     padding_strategy=transformers.utils.PaddingStrategy("max_length"),
+    #     truncation_strategy=transformers.tokenization_utils_base.TruncationStrategy("longest_first"),
+    #     max_length=config.max_position_embeddings,
+    #     stride=0,
+    #     pad_to_multiple_of=None,
+    # )
+    
+    print(tokenized_datasets)
+    print(len(tokenized_datasets["train"][0]["input_ids"]))
+    print(tokenizer)
+    
+    print(f"PARAMTERS: {sum(p.numel() for p in model.parameters())}")
 
     # Data collator
     # This one will take care of randomly masking the tokens and permuting the sentences.
     data_collator = DataCollatorForBartDenoisingLM(
+        max_length=config.max_position_embeddings,
         tokenizer=tokenizer,
         decoder_start_token_id=model.config.decoder_start_token_id,
         mask_ratio=data_args.mlm_probability,
         poisson_lambda=data_args.poisson_lambda,
         permute_sentence_ratio=data_args.permute_sentence_ratio,
     )
-
-    # Store some constant
-    num_epochs = int(training_args.num_train_epochs)
-    train_batch_size = int(training_args.per_device_train_batch_size) * torch.cuda.device_count()
-    per_device_eval_batch_size = int(training_args.per_device_eval_batch_size)
-    eval_batch_size = per_device_eval_batch_size * torch.cuda.device_count()
-
-    num_train_steps = len(tokenized_datasets["train"]) // train_batch_size * num_epochs
-
     
-    training_args = Seq2SeqTrainingArguments()
+    training_args = Seq2SeqTrainingArguments(
+        overwrite_output_dir=True,
+        output_dir=training_args.output_dir,
+        fp16=True,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=1,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        num_train_epochs=100,
+        load_best_model_at_end=True,
+        dataloader_num_workers=len(os.sched_getaffinity(0)),
+    )
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
@@ -716,7 +671,8 @@ def main():
         train_dataset=tokenized_datasets["train"],
         eval_dataset=tokenized_datasets["test"],
         tokenizer=tokenizer,
-        compute_metrics=get_compute_metric_fn(),
+        compute_metrics=get_compute_metric_fn(tokenizer),
+        callbacks=[transformers.EarlyStoppingCallback(early_stopping_patience=5)],
     )
     trainer.train()
 
