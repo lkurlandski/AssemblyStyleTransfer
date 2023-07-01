@@ -191,6 +191,7 @@ class OutputManager:
         self.parse = self.data / "parse"
         self.disassemble = self.data / "disassemble"
         self.pre_normalized = self.data / "pre_normalized"
+        self.merged = self.data / "merged"
 
         # pretrain paths
         self.pretrain = self.data / "pretrain"
@@ -225,6 +226,7 @@ class OutputManager:
             self.parse,
             self.disassemble,
             self.pre_normalized,
+            self.merged,
         ]
 
     def mkdir_prepare_paths(self, *, exist_ok: bool = False, parents: bool = False) -> None:

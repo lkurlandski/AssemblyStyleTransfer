@@ -43,7 +43,6 @@ except ImportError:
     def tqdm(iterable, *args, **kwargs):
         return iterable
 
-
 import r2pipe
 
 import cfg
@@ -65,12 +64,40 @@ NORMALIZER = get_pre_normalizer()
 ALREADY_DONE = set()
 
 
+def process_text(text):
+    # Remove spaces at the beginning and end of a line
+    text = re.sub(r'^ +| +$', '', text, flags=re.MULTILINE)
+    # Replace more than one space with a single space
+    text = re.sub(r' +', ' ', text)
+    # Replace more than one newline character with a single newline character
+    text = re.sub(r'\n+', '\n', text)
+    # Ensure ends with newline
+    text = text.lstrip().rstrip() + '\n'
+    
+    return text
+
+
+def merge(d: Path, dest_path: Path) -> Path:
+    out_file = (dest_path / d.stem).with_suffix(".txt")
+    data = []
+    for f in d.glob("*.asm"):
+        with open(f) as handle:
+            s = handle.read()
+        s = process_text(s)
+        data.append(f"{f.stem}\n{s}")
+    with open(out_file, "w") as handle:
+        handle.write(f"{'-'*42}\n".join(data))
+    shutil.rmtree(d, ignore_errors=True)
+    return out_file
+
+
 def pre_normalize(f: Path, dest_path: Path) -> Path:
     d_out = dest_path / f.parent.name
     d_out.mkdir(exist_ok=True)
     f_out = d_out / f.name
     with open(f) as handle:
         out_str = NORMALIZER.normalize_str(handle.read())
+    out_str = out_str.lstrip().rstrip() + "\n"
     with open(f_out, "w") as handle:
         handle.write(out_str)
     f.unlink()
@@ -155,6 +182,8 @@ class PDRParser:
 
 def disassemble(f: Path, dest_path: Path) -> list[Path]:
     outpath = dest_path / f.stem
+    if outpath.exists():
+        return []
     outpath.mkdir()
     parser = PDRParser(f)
     for i, (start, end, func) in enumerate(parser):
@@ -236,19 +265,20 @@ def download_sorel(dest_path: Path, n_files: int) -> tp.Generator[Path, None, No
 
     yielded = set()
     command = f"{cfg.AWS} s3 cp {cfg.BUCKET} {dest_path} --recursive --no-sign-request --quiet"
-    pro = subprocess.Popen(command, shell=True)
-    while pro.poll() is None:
-        for p in dest_path.iterdir():
-            if p.suffix == "":
-                p.rename(p.with_suffix(".zlib"))
-            if p.name not in yielded and p.suffix == ".zlib":
-                yielded.add(p.name)
-                yield p
-        if len(yielded) >= n_files:
-            break
-
-    time.sleep(WAIT)
-    os.system("killall aws")
+    try:
+        pro = subprocess.Popen(command, shell=True)
+        while pro.poll() is None:
+            for p in dest_path.iterdir():
+                if p.suffix == "":
+                    p.rename(p.with_suffix(".zlib"))
+                if p.name not in yielded and p.suffix == ".zlib":
+                    yielded.add(p.name)
+                    yield p
+            if len(yielded) >= n_files:
+                break
+    finally:
+        time.sleep(WAIT)
+        os.system("killall aws")
 
     for p in dest_path.iterdir():
         if p.suffix == "":
@@ -264,17 +294,18 @@ def download_windows(dest_path: Path, n_files: int) -> tp.Generator[Path, None, 
     yielded = set()
     dest_path.mkdir(exist_ok=True)
     command = f"scp {cfg.WINDOWS_BUCKET} {dest_path.as_posix()}/"
-    pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
-    while pro.poll() is None:
-        for p in dest_path.iterdir():
-            if p.name not in yielded and p.suffix == ".exe":
-                yielded.add(p.name)
-                yield p
-        if len(yielded) >= n_files:
-            break
-
-    time.sleep(WAIT)
-    os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
+    try:
+        pro = subprocess.Popen(command, shell=True, preexec_fn=os.setsid, stdout=subprocess.PIPE)
+        while pro.poll() is None:
+            for p in dest_path.iterdir():
+                if p.name not in yielded and p.suffix == ".exe":
+                    yielded.add(p.name)
+                    yield p
+            if len(yielded) >= n_files:
+                break
+    finally:
+        time.sleep(WAIT)
+        os.killpg(os.getpgid(pro.pid), signal.SIGTERM)
 
     for p in dest_path.iterdir():
         if p.suffix == ".exe":
@@ -293,8 +324,10 @@ def process_binary(om: OutputManager, f: Path, max_len: int, _16_bit: bool, _32_
     if not f.exists():
         return 3
     files = disassemble(f, om.disassemble)
-    for f in files:
-        f = pre_normalize(f, om.pre_normalized)
+    files_ = []
+    for _f in files:
+        files_.append(pre_normalize(_f, om.pre_normalized))
+    merge(om.pre_normalized / f.stem, om.merged)
     return 0
 
 
@@ -336,7 +369,7 @@ def main(
     assert _16_bit or _32_bit or _64_bit
     om = OutputManager()
     om.mkdir_prepare_paths(exist_ok=True, parents=True)
-    ALREADY_DONE.update(p.stem for p in OutputManager().pre_normalized.iterdir())
+    ALREADY_DONE.update(p.stem for p in OutputManager().merged.iterdir())
 
     if no_download:
         file_iterable = no_download_file_iterable(om, responsibility)
@@ -346,10 +379,8 @@ def main(
         )
 
     while True:
-        for f in tqdm(file_iterable, total=n_sorel_files + n_windows_files):
-            if not is_responsible(f, responsibility):
-                continue
-            if f.stem in ALREADY_DONE:
+        for f in file_iterable:
+            if f.stem in ALREADY_DONE:  # prevents processing files which have already been processed
                 continue
             process_binary(om, f, max_len, _16_bit, _32_bit, _64_bit)
 
@@ -358,11 +389,20 @@ def main(
         else:
             break
 
-    # om.rmdir_prepare_paths(ignore_errors=True)
+    om.rmdir_prepare_paths(ignore_errors=True)
 
 
 def debug() -> None:
-    main(N_FILES, N_FILES, 1e6, False, True, False)
+    main(
+        n_sorel_files=None,
+        n_windows_files=None,
+        max_len=MAX_LEN,
+        _16_bit=False,
+        _32_bit=True,
+        _64_bit=False,
+        no_download=True,
+        responsibility="ALL",
+    )
 
 
 def cli() -> None:

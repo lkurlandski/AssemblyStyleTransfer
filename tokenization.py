@@ -26,6 +26,10 @@ from utils import mem, OutputManager
 MIN_LINES = 4
 
 
+def remove_first_line(text):
+    return re.sub(r'^.*?\n', '', text, count=1)
+
+
 def get_raw_assembly_dataset(
     files: Collection[Path],
     num_proc: int = cfg.N_WORKERS,
@@ -34,9 +38,11 @@ def get_raw_assembly_dataset(
 ) -> Dataset:
     def gen():
         for f in files:
-            snippet = f.read_text()
-            if min_lines <= snippet.count("\n") <= max_lines:
-                yield {"text": snippet}
+            functions = f.read_text().split('-' * 42)
+            for func in functions:
+                func = remove_first_line(func.lstrip())  # trim location
+                if min_lines <= func.count("\n") <= max_lines:
+                    yield {"text": func}
 
     dataset = Dataset.from_generator(gen, num_proc=num_proc)
     return dataset
@@ -53,6 +59,7 @@ def get_pre_normalizer() -> normalizers.Sequence:
         (r"│ ", ""),
         (r"\n{2,}", "\n"),
         (r"^.{31}", ""),
+        ("\n\n", "\n"),
     ]
     norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
     return normalizers.Sequence(norms)
@@ -60,8 +67,10 @@ def get_pre_normalizer() -> normalizers.Sequence:
 
 def get_normalizer() -> normalizers.Sequence:
     rxs_and_rps = [
+        ("\n", cfg.INS),
         (r"(?<=\s)\d+(?=\s)", cfg.NUM),
         (r"asm\.\S*", cfg.ASM),
+        (r"int\.\S*", cfg.INT),
         (r"vtable\.\S*", cfg.VTABLE),
         (r"switch\.\S*", cfg.SWITCH),
         (r"str\.\S*", cfg.STR),
@@ -71,7 +80,10 @@ def get_normalizer() -> normalizers.Sequence:
         (r"case\.\S*", cfg.CASE),
         (r"var_\S*", cfg.VAR),
         (r"arg_\S*", cfg.ARG),
+        (r"ARG_\S*", cfg.ARG),
         (r"\b0x\w+\b", cfg.ADR),
+        (r"^[a-f0-9]+$", cfg.INVALID),
+        (r"^invalid$", cfg.INVALID),
     ]
     norms = [normalizers.Replace(tokenizers.Regex(rx), rp) for rx, rp in rxs_and_rps]
     return normalizers.Sequence(norms)
@@ -79,8 +91,8 @@ def get_normalizer() -> normalizers.Sequence:
 
 def get_pre_tokenizer() -> pre_tokenizers.Sequence:
     # pre_tokenizers.Whitespace splits on "<", ">"
-    isolated = [",", "]", "[", "*", "/", "+", "-"] + cfg.SPECIALS
-    removed = [" ", "\t", "\n"]
+    isolated = [",", "]", "[", "*", "/", "+", "-"] + cfg.SPECIALS + cfg.NONSPECIALS
+    removed = [" ", "\t"]
     return pre_tokenizers.Sequence(
         [pre_tokenizers.Split(s, "removed") for s in removed] + [pre_tokenizers.Split(s, "isolated") for s in isolated]
     )
@@ -100,7 +112,7 @@ def get_model(model: str) -> Tokenizer:
 
 def get_trainer(model: models.Model, vocab_size: int = None) -> trainers.Trainer:
     if isinstance(model, models.WordLevel):
-        return trainers.WordLevelTrainer(vocab_size=vocab_size, special_tokens=cfg.SPECIALS)
+        return trainers.WordLevelTrainer(special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.WordPiece):
         return trainers.WordPieceTrainer(vocab_size=vocab_size, special_tokens=cfg.SPECIALS)
     elif isinstance(model, models.BPE):
@@ -132,17 +144,17 @@ def get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
 
 
 def get_tokenizer(
-    tokenizers_path: Path, model: Path, files: Collection[Path] = None, batch_size: int = 512, vocab_size: int = None
+    tokenizers_path: Path, model: Path, files: Collection[Path] = None, batch_size: int = 512, vocab_size: int = None, overwrite: bool = False,
 ) -> Tokenizer:
     path = get_tokenizer_file(tokenizers_path, model)
     print(f"Tokenizer file: {path.as_posix()}", flush=True)
-    if path.exists():
+    if path.exists() and not overwrite:
         print(f"Found cached tokenizer.", flush=True)
         return Tokenizer.from_file(path.as_posix())
 
     print(f"Found {len(files)} files ({round(mem(files), 1)}G).")
     dataset = get_raw_assembly_dataset(files, min_lines=MIN_LINES)
-    print(f"Built a dataset with {dataset.n_rows} examples.")
+    print(f"Built a dataset with {dataset.num_rows} examples.")
     model = get_model(model)
     trainer = get_trainer(model, vocab_size)
     tokenizer = Tokenizer(model)
@@ -171,33 +183,36 @@ def get_fast_tokenizer(tokenizer: Tokenizer, **kwargs) -> PreTrainedTokenizerFas
         cls_token=tokenizers.AddedToken(cfg.CLS),
         bos_token=tokenizers.AddedToken(cfg.BOS),
         eos_token=tokenizers.AddedToken(cfg.EOS),
-        additional_special_tokens=[tokenizers.AddedToken(s) for s in (cfg.ADR, cfg.STR)],
+        additional_special_tokens=cfg.SPECIALS,
         **kwargs,
     )
 
 
-def main(model: str, batch_size: int = 512, vocab_size: int = None) -> None:
+def main(model: str, batch_size: int = 512, vocab_size: int = None, overwrite: bool = False, subset: int = None, **kwargs) -> None:
     om = OutputManager()
-    tokenizers_path = om.tokenizers
-    files = list(om.pre_normalized.rglob("*.asm"))
-    tokenizer = get_tokenizer(tokenizers_path, model, files, batch_size, vocab_size)
+    files = list(om.merged.iterdir())[:subset]
+    tokenizer = get_tokenizer(om.tokenizers, model, files, batch_size, vocab_size, overwrite)
+    fast_tokenizer = get_fast_tokenizer(tokenizer=tokenizer, **kwargs)
+    return fast_tokenizer
 
 
 def debug() -> None:
-    main("WordLevel")
+    main("WordLevel", overwrite=True)
 
 
 def cli() -> None:
     parser = ArgumentParser()
     parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--model", type=str, choices=["WordLevel", "WordPiece", "BPE", "Unigram"])
+    parser.add_argument("--model", type=str, choices=["WordLevel", "WordPiece", "BPE", "Unigram"], default="WordLevel")
     parser.add_argument("--batch_size", type=int, default=512)
-    parser.add_argument("--vocab_size", default=-1)
+    parser.add_argument("--subset", type=int, default=None)
+    parser.add_argument("--vocab_size", default=None)
+    parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     if args.debug:
         debug()
     else:
-        main(args.model, args.batch_size, int(args.vocab_size) if args.vocab_size else None)
+        main(args.model, args.batch_size, int(args.vocab_size) if args.vocab_size else None, args.overwrite, args.subset)
 
 
 if __name__ == "__main__":
