@@ -8,7 +8,7 @@ import capstone
 import torch
 
 
-N_WORKERS = len(os.sched_getaffinity(0)) - 1
+N_WORKERS = max(len(os.sched_getaffinity(0)) - 1, 1)
 
 
 BUCKET = "s3://sorel-20m/09-DEC-2020/binaries/"

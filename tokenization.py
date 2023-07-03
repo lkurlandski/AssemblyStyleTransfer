@@ -144,13 +144,23 @@ def get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
 
 
 def get_tokenizer(
-    tokenizers_path: Path, model: Path, files: Collection[Path] = None, batch_size: int = 512, vocab_size: int = None, overwrite: bool = False,
+    tokenizers_path: Path,
+    model: Path,
+    files: Collection[Path] = None,
+    batch_size: int = 512,
+    vocab_size: int = None,
+    use_cache: bool = True,
+    overwrite: bool = False,
 ) -> Tokenizer:
     path = get_tokenizer_file(tokenizers_path, model)
     print(f"Tokenizer file: {path.as_posix()}", flush=True)
-    if path.exists() and not overwrite:
+    if path.exists() and use_cache:
         print(f"Found cached tokenizer.", flush=True)
         return Tokenizer.from_file(path.as_posix())
+    elif path.exists() and not overwrite:
+        print(f"Will train a new tokenizer, but not overwrite the existing tokenizer.", flush=True)
+    elif path.exists() and overwrite:
+        print(f"Will train a new tokenizer and overwrite the existing tokenizer.", flush=True)
 
     print(f"Found {len(files)} files ({round(mem(files), 1)}G).")
     dataset = get_raw_assembly_dataset(files, min_lines=MIN_LINES)

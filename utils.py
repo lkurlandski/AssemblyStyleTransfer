@@ -25,8 +25,8 @@ def one_and_only_one(*args) -> bool:
     return state
 
 
-def count_parameters(model: nn.Module):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+def count_parameters(model: nn.Module, requires_grad: bool = False) -> int:
+    return sum(p.numel() for p in model.parameters() if (not requires_grad or p.requires_grad))
 
 
 def estimate_memory_needs(

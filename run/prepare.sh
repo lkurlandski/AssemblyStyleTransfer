@@ -18,10 +18,6 @@
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate AssemblyStyleTransfer
 python prepare.py \
---all \
---clean_all \
---remove_all \
---n_files=10000 \
---max_len=1000000 \
---posix
-
+--n_sorel_files=25 \
+--n_windows_files=25 \
+--_32_bit 
