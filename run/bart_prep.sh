@@ -22,7 +22,7 @@ python \
 bart.py \
 --overwrite=1 \
 --output_dir="./output/models/bart" \
---max_seq_length=256 \
+--max_length=256 \
 --downsize=4 \
 --preprocessing_num_workers=$n_tasks_per_node \
 --evaluation_strategy="epoch" \

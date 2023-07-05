@@ -268,7 +268,7 @@ def main(
     actions = (pretrain, pseudosupervised, unsupervised)
 
     files = [p for p in paths.disassemble.iterdir() if p.suffix == ".asm"]
-    print(f"Found {round(mem(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
+    print(f"Found {round(disk_usage(files), 1)}G of files in {paths.disassemble.as_posix()}", flush=True)
     print("Getting pretraining dataset...", flush=True)
     dataset = get_raw_assembly_dataset(files)
     if data_args.clear_cache:
@@ -319,8 +319,8 @@ def main(
 
     mal_files = [p for p in paths.snippets_mal.iterdir() if p.suffix == ".asm"]
     ben_files = [p for p in paths.snippets_ben.iterdir() if p.suffix == ".asm"]
-    print(f"Found {round(mem(mal_files), 1)}G of mal_files in {paths.snippets_mal.as_posix()}", flush=True)
-    print(f"Found {round(mem(ben_files), 1)}G of mal_files in {paths.snippets_ben.as_posix()}", flush=True)
+    print(f"Found {round(disk_usage(mal_files), 1)}G of mal_files in {paths.snippets_mal.as_posix()}", flush=True)
+    print(f"Found {round(disk_usage(ben_files), 1)}G of mal_files in {paths.snippets_ben.as_posix()}", flush=True)
     print("Getting seq2seq dataset...", flush=True)
     dataset = get_unsupervised_dataset(mal_files, ben_files, data_args.mode)
     if data_args.clear_cache:

@@ -5,6 +5,7 @@ Process data for learning, including tokenization and data processing (CPU-inten
 from argparse import ArgumentParser
 from collections.abc import Collection
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from itertools import cycle, islice, tee, zip_longest
 import os
@@ -19,8 +20,9 @@ from tokenizers import models, normalizers, pre_tokenizers, processors, trainers
 import transformers
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast, PretrainedConfig
 
-import cfg
-from utils import mem, OutputManager
+from src import cfg
+from src.output_manager import OutputManager
+from src.utils import disk_usage
 
 
 MIN_LINES = 4
@@ -32,7 +34,7 @@ def remove_first_line(text):
 
 def get_raw_assembly_dataset(
     files: Collection[Path],
-    num_proc: int = cfg.N_WORKERS,
+    num_proc: int = 1,
     min_lines: int = float("-inf"),
     max_lines: int = float("inf"),
 ) -> Dataset:
@@ -98,14 +100,14 @@ def get_pre_tokenizer() -> pre_tokenizers.Sequence:
     )
 
 
-def get_model(model: str) -> Tokenizer:
-    if model == "WordLevel":
-        return models.WordLevel(unk_token=cfg.UNK)
-    elif model == "WordPiece":
-        return models.WordPiece(unk_token=cfg.UNK)
-    elif model == "BPE":
-        return models.BPE(unk_token=cfg.UNK)
-    elif model == "Unigram":
+def get_model(algorithm: str) -> Tokenizer:
+    if algorithm == "WordLevel":
+        return models.WordLevel()
+    elif algorithm == "WordPiece":
+        return models.WordPiece()
+    elif algorithm == "BPE":
+        return models.BPE()
+    elif algorithm == "Unigram":
         return models.Unigram()
     raise ValueError()
 
@@ -139,44 +141,47 @@ def batch_iterator(dataset: Dataset, batch_size: int = 512) -> tp.Generator[str,
         yield dataset[i : i + batch_size]["text"]
 
 
-def get_tokenizer_file(tokenizers_path: Path, model: Path) -> Path:
-    return (Path(tokenizers_path) / model).with_suffix(".json")
+def get_tokenizer_file(tokenizers_path: Path, algorithm: str) -> Path:
+    return (tokenizers_path / algorithm).with_suffix(".json")
 
 
 def get_tokenizer(
     tokenizers_path: Path,
-    model: Path,
+    algorithm: str,
     files: Collection[Path] = None,
     batch_size: int = 512,
     vocab_size: int = None,
     use_cache: bool = True,
     overwrite: bool = False,
 ) -> Tokenizer:
-    path = get_tokenizer_file(tokenizers_path, model)
-    print(f"Tokenizer file: {path.as_posix()}", flush=True)
+    path = get_tokenizer_file(tokenizers_path, algorithm)
     if path.exists() and use_cache:
-        print(f"Found cached tokenizer.", flush=True)
+        print("Retrieving cached_tokenizer.", flush=True)
         return Tokenizer.from_file(path.as_posix())
-    elif path.exists() and not overwrite:
-        print(f"Will train a new tokenizer, but not overwrite the existing tokenizer.", flush=True)
+    
+    print("Training a new tokenzer.", flush=True)
+    if path.exists() and not overwrite:
+        print(f"Will overwrite the existing tokenizer.", flush=True)
     elif path.exists() and overwrite:
-        print(f"Will train a new tokenizer and overwrite the existing tokenizer.", flush=True)
+        print(f"Will not overwrite the existing tokenizer.", flush=True)
 
-    print(f"Found {len(files)} files ({round(mem(files), 1)}G).")
     dataset = get_raw_assembly_dataset(files, min_lines=MIN_LINES)
-    print(f"Built a dataset with {dataset.num_rows} examples.")
-    model = get_model(model)
+    model = get_model(algorithm)
     trainer = get_trainer(model, vocab_size)
     tokenizer = Tokenizer(model)
     tokenizer.normalizer = get_normalizer()
     tokenizer.pre_tokenizer = get_pre_tokenizer()
-    tokenizer.post_processor = get_post_processor()
     tokenizer.add_special_tokens(cfg.SPECIALS)
     tokenizer.add_tokens([get_added_token(s) for s in cfg.NONSPECIALS])
-    print(f"Training new tokenizer with {batch_size=} and {len(os.sched_getaffinity(0))} logical cores.")
-    tokenizer.train_from_iterator(batch_iterator(dataset, batch_size), trainer, length=len(dataset))
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tokenizer.save(path.as_posix())
+    tokenizer.train_from_iterator(
+        batch_iterator(dataset, batch_size),
+        trainer,
+        length=len(dataset) // batch_size,
+    )
+
+    if not path.exists() or overwrite:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tokenizer.save(path.as_posix())
     return tokenizer
 
 
