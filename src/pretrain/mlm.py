@@ -22,30 +22,15 @@ from transformers import (
 )
 
 from src.cfg import *
-from src.pretrain.prep import (
-    get_callbacks,
-    get_tokenizer_and_dataset,
+from src.pretrain.prep import get_tokenizer_and_dataset
+from src.pretrain.arg_classes import (
     TokenizerArguments,
     DatasetArguments,
+    BERTArguments,
 )
+from src.pretrain.utils import get_callbacks
 from src.utils import count_parameters
 from src.utilization import status
-
-
-@dataclass
-class ModelArguments:
-    hidden_size: Optional[int] = field(default=768, metadata={"help": ""})
-    num_hidden_layers: Optional[int] = field(default=12, metadata={"help": ""})
-    num_attention_heads: Optional[int] = field(default=12, metadata={"help": ""})
-    intermediate_size: Optional[int] = field(default=3072, metadata={"help": ""})
-    downsize: Optional[int] = field(default=None, metadata={"help": ""})
-
-    def __post_init__(self):
-        if self.downsize:
-            self.hidden_size = self.hidden_size // self.downsize
-            self.num_hidden_layers = self.num_hidden_layers // self.downsize
-            self.num_attention_heads = self.num_attention_heads // self.downsize
-            self.intermediate_size = self.intermediate_size // self.downsize
 
 
 def main():
@@ -56,7 +41,7 @@ def main():
         [
             TokenizerArguments,
             DatasetArguments,
-            ModelArguments,
+            BERTArguments,
             TrainingArguments,
         ]
     )

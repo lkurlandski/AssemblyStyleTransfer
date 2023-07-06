@@ -28,6 +28,13 @@ class OutputManager:
         self.models = self.output / "models"
         self.encoder = self.models / "encoder"
         self.decoder = self.models / "decoder"
+        # pretrain processed datasets
+        self.pretrain_data = self.output / "pretrain"
+        self.pretrain_raw = self.pretrain_data / "raw"
+        self.pretrain_split = self.pretrain_data / "split"
+        self.pretrain_tokenized = self.pretrain_data / "tokenized"
+        self.pretrain_grouped = self.pretrain_data / "grouped"
+        
         # train paths
         # self.models
         self.pseudo_supervised = self.models / "pseudo_supervised"

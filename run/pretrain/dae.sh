@@ -31,3 +31,4 @@ python src/pretrain/dae.py \
 --save_strategy="epoch" \
 --evaluation_strategy="epoch" \
 --dataloader_num_workers=$n_tasks_per_node
+--disable_tqdm

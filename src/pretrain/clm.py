@@ -21,27 +21,14 @@ from transformers import (
 )
 
 from src.cfg import *
-from src.pretrain.prep import (
-    get_callbacks,
-    get_tokenizer_and_dataset,
+from src.pretrain.arg_classes import (
     TokenizerArguments,
     DatasetArguments,
+    GPTArguments,
 )
+from src.pretrain.prep import get_tokenizer_and_dataset
+from src.pretrain.utils import get_callbacks
 from src.utils import count_parameters
-
-
-@dataclass
-class ModelArguments:
-    n_embd: Optional[int] = field(default=768, metadata={"help": ""})
-    n_layer: Optional[int] = field(default=12, metadata={"help": ""})
-    n_head: Optional[int] = field(default=12, metadata={"help": ""})
-    downsize: Optional[int] = field(default=None, metadata={"help": ""})
-
-    def __post_init__(self):
-        if self.downsize:
-            self.n_embd = self.n_embd // self.downsize
-            self.n_layer = self.n_layer // self.downsize
-            self.n_head = self.n_head // self.downsize
 
 
 def main():
@@ -52,7 +39,7 @@ def main():
         [
             TokenizerArguments,
             DatasetArguments,
-            ModelArguments,
+            GPTArguments,
             TrainingArguments,
         ]
     )

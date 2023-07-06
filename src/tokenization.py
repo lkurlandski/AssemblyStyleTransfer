@@ -71,18 +71,22 @@ def get_normalizer() -> normalizers.Sequence:
     rxs_and_rps = [
         ("\n", cfg.INS),
         (r"(?<=\s)\d+(?=\s)", cfg.NUM),
-        (r"asm\.\S*", cfg.ASM),
-        (r"int\.\S*", cfg.INT),
-        (r"vtable\.\S*", cfg.VTABLE),
-        (r"switch\.\S*", cfg.SWITCH),
-        (r"str\.\S*", cfg.STR),
-        (r"sym\.\S*", cfg.SYM),
-        (r"fcn\.\S*", cfg.FCN),
-        (r"sub\.\S*", cfg.SUB),
-        (r"case\.\S*", cfg.CASE),
-        (r"var_\S*", cfg.VAR),
-        (r"arg_\S*", cfg.ARG),
-        (r"ARG_\S*", cfg.ARG),
+        (r"asm\.\S+", cfg.ASM),
+        (r"int\.\S+", cfg.INT),
+        (r"loc\.\S+", cfg.LOC),
+        (r"vtable\.\S+", cfg.VTABLE),
+        (r"switch\.\S+", cfg.SWITCH),
+        (r"section\.\S+", cfg.SECTION),
+        (r"str\.\S+", cfg.STR),
+        (r"sym\.\S+", cfg.SYM),
+        (r"fcn\.\S+", cfg.FCN),
+        (r"sub\.\S+", cfg.SUB),
+        (r"case\.\S+", cfg.CASE),
+        (r"reloc\.\S+", cfg.RELOC),
+        (r"var_\S+", cfg.VAR),
+        (r"arg_\S+", cfg.ARG),
+        (r"ARG_\S+", cfg.ARG),
+        (r"std::\S+", cfg.STD),
         (r"\b0x\w+\b", cfg.ADR),
         (r"^[a-f0-9]+$", cfg.INVALID),
         (r"^invalid$", cfg.INVALID),
@@ -102,7 +106,7 @@ def get_pre_tokenizer() -> pre_tokenizers.Sequence:
 
 def get_model(algorithm: str) -> Tokenizer:
     if algorithm == "WordLevel":
-        return models.WordLevel()
+        return models.WordLevel(unk_token=cfg.UNK)
     elif algorithm == "WordPiece":
         return models.WordPiece()
     elif algorithm == "BPE":
@@ -160,9 +164,9 @@ def get_tokenizer(
         return Tokenizer.from_file(path.as_posix())
     
     print("Training a new tokenzer.", flush=True)
-    if path.exists() and not overwrite:
+    if path.exists() and overwrite:
         print(f"Will overwrite the existing tokenizer.", flush=True)
-    elif path.exists() and overwrite:
+    elif path.exists() and not overwrite:
         print(f"Will not overwrite the existing tokenizer.", flush=True)
 
     dataset = get_raw_assembly_dataset(files, min_lines=MIN_LINES)

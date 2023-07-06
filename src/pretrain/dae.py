@@ -30,43 +30,16 @@ from transformers import (
 from transformers.models.bart.modeling_bart import shift_tokens_right
 
 from src.cfg import *
-from src.pretrain.prep import (
-    get_callbacks,
-    get_tokenizer_and_dataset,
-    DatasetArguments,
+from src.pretrain.arg_classes import (
     TokenizerArguments,
+    DatasetArguments,
+    BARTArguments,
+    DAEArguments,
 )
-from src.utils import count_parameters
+from src.pretrain.prep import get_tokenizer_and_dataset
+from src.pretrain.utils import get_callbacks
 from src.utilization import status
-
-
-@dataclass
-class ModelArguments:
-    encoder_layers: int = field(default=12, metadata={"help": ""})
-    encoder_ffn_dim: int = field(default=4096, metadata={"help": ""})
-    encoder_attention_heads: int = field(default=16, metadata={"help": ""})
-    decoder_layers: int = field(default=12, metadata={"help": ""})
-    decoder_ffn_dim: int = field(default=4096, metadata={"help": ""})
-    decoder_attention_heads: int = field(default=16, metadata={"help": ""})
-    d_model: int = field(default=1024, metadata={"help": ""})
-    downsize: int = field(default=None, metadata={"help": "1 -> 370M; 2 -> 50.M; 4 -> 8.7M"})
-
-    def __post_init__(self):
-        if self.downsize:
-            self.encoder_layers = self.encoder_layers // self.downsize
-            self.encoder_ffn_dim = self.encoder_ffn_dim // self.downsize
-            self.encoder_attention_heads = self.encoder_attention_heads // self.downsize
-            self.decoder_layers = self.decoder_layers // self.downsize
-            self.decoder_ffn_dim = self.decoder_ffn_dim // self.downsize
-            self.decoder_attention_heads = self.decoder_attention_heads // self.downsize
-            self.d_model = self.d_model // self.downsize
-
-
-@dataclass
-class DAEArguments:
-    mlm_probability: float = field(default=0.3, metadata={"help": ""})
-    permute_sentence_ratio: float = field(default=1.0, metadata={"help": ""})
-    poisson_lambda: float = field(default=3.0, metadata={"help": ""})
+from src.utils import count_parameters
 
 
 @dataclass
@@ -282,7 +255,7 @@ def main():
         [
             TokenizerArguments,
             DatasetArguments,
-            ModelArguments,
+            BARTArguments,
             DAEArguments,
             Seq2SeqTrainingArguments,
         ]
@@ -348,7 +321,7 @@ def main():
     )
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    
+
     if training_args.do_train:
         trainer.train()
 

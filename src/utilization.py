@@ -9,18 +9,20 @@ import torch
 
 
 divisors = {
-    "B": 1,
-    "K": 1024,
-    "M": 1024 ** 2,
-    "G": 1024 ** 3,
-    "T": 1024 ** 4,
+    "B": 2 ** 00,
+    "K": 2 ** 10,
+    "M": 2 ** 20,
+    "G": 2 ** 30,
+    "T": 2 ** 40,
 }
 
 
-def cpu_mem(fmt: str = "G", digits: int = 2) -> str:
-    b = psutil.Process(os.getpid()).memory_info().rss
-    m = b / divisors[fmt]
-    return f"{round(m, digits)}{fmt}"
+def _cpu_mem() -> int:
+    return psutil.Process(os.getpid()).memory_info().rss
+
+
+def cpu_mem(fmt: str = "G", digits: int = 2):
+    return f"{round(_cpu_mem() / divisors[fmt], digits)}{fmt}"
 
 
 def gpu_summary(device: int = None, abbreviated: bool = True) -> dict[int, str]:
