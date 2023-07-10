@@ -6,6 +6,7 @@ Utilities for pretraining scripts.
 "70% < 255; 75% < 303; 80% < 367; 85% < 471; 90% < 647; 95% < 1036"
 """
 
+from datetime import datetime
 from itertools import chain
 import os
 from pathlib import Path
@@ -150,6 +151,10 @@ def get_dataset(
     if overwrite or not grouped_path.exists():
         shutil.rmtree(grouped_path, ignore_errors=True)
         grouped_dataset.save_to_disk(grouped_path.as_posix())
+    print(f"{grouped_dataset=}")
+    print(f"{grouped_dataset[0]}")
+    print(f"{len(grouped_dataset[0]['input_ids'])=}")
+    print(BR, flush=True)
 
     return grouped_dataset
 
@@ -159,10 +164,13 @@ def get_tokenizer_and_dataset(
     dataset_args: DatasetArguments,
 ) -> tuple[PreTrainedTokenizerBase, DatasetDict]:
     om = OutputManager()
-    files = sorted(list(om.merged.glob("*.txt")))
-    print(f"{len(files)=}")
-    print(f"{round(disk_usage(files), 2)=}")
-    print(BR, flush=True)
+
+    files = []
+    if not tokenizer_args.tok_use_saved or dataset_args.dat_use_saved:
+        files = sorted(list(om.merged.glob("*.txt")))
+        print(f"{len(files)=}")
+        print(f"{round(disk_usage(files), 2)=}")
+        print(BR, flush=True)
 
     tokenizer = get_tokenizer(
         om.tokenizers,
@@ -222,5 +230,14 @@ def main():
     print(BR, flush=True)
 
 
+def debug():
+    ...
+
+
 if __name__ == "__main__":
-    main()
+    print(f"{BR}\nSTART @{datetime.now()}\n{BR}", flush=True)
+    if len(sys.argv) > 1 and sys.arv[1] == "--debug":
+        debug()
+    else:
+        main()
+    print(f"{BR}\nFINISH @{datetime.now()}\n{BR}", flush=True)

@@ -74,7 +74,6 @@ class DataCollatorForDAE:
             return_tensors="pt",
         )
         self.device = batch["input_ids"].device
-        print(status(self.device))
         batch["labels"] = torch.clone(batch["input_ids"])
         batch["decoder_input_ids"] = shift_tokens_right(
             batch["labels"], self.tokenizer.pad_token_id, self.decoder_start_token_id
@@ -87,8 +86,6 @@ class DataCollatorForDAE:
             )
             do_permute = True
 
-        print(status(self.device))
-
         # masking span of tokens (text infilling in the paper)
         if self.mask_ratio:
             tmp_input_ids, tmp_labels = self.span_mask_tokens(
@@ -97,7 +94,7 @@ class DataCollatorForDAE:
                 do_permute,
             )
             batch["input_ids"], batch["labels"] = tensor(tmp_input_ids), tensor(tmp_labels)
-        print(status(self.device))
+
         # ignore pad tokens
         batch["attention_mask"] = (batch["input_ids"] != self.tokenizer.pad_token_id).int()
         batch["decoder_attention_mask"] = (
@@ -231,6 +228,7 @@ def get_compute_metric_fn(tokenizer):
 
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
+        predictions = torch.argmax(torch.tensor(predictions[0]), dim=2)
         decoded_preds = tokenizer.batch_decode(predictions, skip_special_tokens=True)
         labels = np.where(labels != -100, labels, tokenizer.pad_token_id)
         decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
@@ -247,25 +245,8 @@ def get_compute_metric_fn(tokenizer):
     return compute_metrics
 
 
-def main():
+def main(tokenizer_args, dataset_args, model_args, dae_args, training_args):
     pprint({k: v for k, v in os.environ.items() if k.startswith("SLURM")})
-    print(BR, flush=True)
-
-    parser = HfArgumentParser(
-        [
-            TokenizerArguments,
-            DatasetArguments,
-            BARTArguments,
-            DAEArguments,
-            Seq2SeqTrainingArguments,
-        ]
-    )
-    args = parser.parse_args_into_dataclasses()
-    tokenizer_args = args[0]
-    dataset_args = args[1]
-    model_args = args[2]
-    dae_args = args[3]
-    training_args = args[4]
     pprint(dataset_args)
     pprint(tokenizer_args)
     pprint(model_args)
@@ -290,7 +271,10 @@ def main():
         eos_token_id=tokenizer.eos_token_id,
         decoder_start_token_id=tokenizer.eos_token_id,
         forced_eos_token_id=tokenizer.eos_token_id,
+        return_dict=True,
+        return_dict_in_generate=True,
     )
+    print(f"{config=}")
     model = BartForConditionalGeneration(config)
     print(f"{model=}")
     print(f"{count_parameters(model)=}")
@@ -321,12 +305,56 @@ def main():
     )
 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "true"
 
     if training_args.do_train:
         trainer.train()
 
 
+def cli():
+    parser = HfArgumentParser(
+        [
+            TokenizerArguments,
+            DatasetArguments,
+            BARTArguments,
+            DAEArguments,
+            Seq2SeqTrainingArguments,
+        ]
+    )
+    args = parser.parse_args_into_dataclasses()
+    tokenizer_args = args[0]
+    dataset_args = args[1]
+    model_args = args[2]
+    dae_args = args[3]
+    training_args = args[4]
+
+    main(tokenizer_args, dataset_args, model_args, dae_args, training_args)
+
+
+def debug():
+    tokenizer_args = TokenizerArguments(max_length=128, vocab_size=4096, tok_algorithm="BPE")
+    dataset_args = DatasetArguments(dat_path="./output/pretrain", dat_n_examples=4096)
+    model_args = BARTArguments(scale=4)
+    dae_args = DAEArguments
+    training_args = Seq2SeqTrainingArguments(
+        output_dir="./output/dae",
+        do_train=True,
+        load_best_model_at_end=True,
+        save_strategy="epoch",
+        evaluation_strategy="epoch",
+        num_train_epochs=100,
+        per_device_train_batch_size=512,
+        per_device_eval_batch_size=8,
+        dataloader_num_workers=1,
+    )
+
+    main(tokenizer_args, dataset_args, model_args, dae_args, training_args)
+
+
 if __name__ == "__main__":
     print(f"{BR}\nSTART @{datetime.now()}\n{BR}", flush=True)
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--debug":
+        debug()
+    else:
+        cli()
     print(f"{BR}\nFINISH @{datetime.now()}\n{BR}", flush=True)
