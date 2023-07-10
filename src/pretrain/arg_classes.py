@@ -34,14 +34,19 @@ class BERTArguments:
     num_hidden_layers: Optional[int] = field(default=12, metadata={"help": ""})
     num_attention_heads: Optional[int] = field(default=12, metadata={"help": ""})
     intermediate_size: Optional[int] = field(default=3072, metadata={"help": ""})
-    downsize: Optional[int] = field(default=None, metadata={"help": ""})
+    scale: Optional[float] = field(
+        default=None,
+        metadata={
+            "help": ".5 -> 690M; .75 -> 210M; 1 -> 89M; 1.5 -> 27M; 2 -> 12.4M; 3 -> 4.3M, 4 -> 2.2M"
+        },
+    )
 
     def __post_init__(self):
-        if self.downsize:
-            self.hidden_size = self.hidden_size // self.downsize
-            self.num_hidden_layers = self.num_hidden_layers // self.downsize
-            self.num_attention_heads = self.num_attention_heads // self.downsize
-            self.intermediate_size = self.intermediate_size // self.downsize
+        if self.scale:
+            self.hidden_size = int(self.hidden_size / self.scale)
+            self.num_hidden_layers = int(self.num_hidden_layers / self.scale)
+            self.num_attention_heads = int(self.num_attention_heads / self.scale)
+            self.intermediate_size = int(self.intermediate_size / self.scale)
 
 
 @dataclass
@@ -49,13 +54,16 @@ class GPTArguments:
     n_embd: Optional[int] = field(default=768, metadata={"help": ""})
     n_layer: Optional[int] = field(default=12, metadata={"help": ""})
     n_head: Optional[int] = field(default=12, metadata={"help": ""})
-    downsize: Optional[int] = field(default=None, metadata={"help": ""})
+    scale: Optional[float] = field(
+        default=None,
+        metadata={"help": "0.5: ; 0.75: 200M, 1: 88M ; 2: 12M ; 3: 4.2M, 4: 2.1M"},
+    )
 
     def __post_init__(self):
-        if self.downsize:
-            self.n_embd = self.n_embd // self.downsize
-            self.n_layer = self.n_layer // self.downsize
-            self.n_head = self.n_head // self.downsize
+        if self.scale:
+            self.n_embd = int(self.n_embd / self.scale)
+            self.n_layer = int(self.n_layer / self.scale)
+            self.n_head = int(self.n_head / self.scale)
 
 
 @dataclass
@@ -67,17 +75,20 @@ class BARTArguments:
     decoder_ffn_dim: int = field(default=4096, metadata={"help": ""})
     decoder_attention_heads: int = field(default=16, metadata={"help": ""})
     d_model: int = field(default=1024, metadata={"help": ""})
-    downsize: int = field(default=None, metadata={"help": "1 -> 370M; 2 -> 50.M; 4 -> 8.7M"})
+    scale: Optional[float] = field(
+        default=None,
+        metadata={"help": "0.5: 2.8B, 0.75: 850M; 1 -> 360M; 2 -> 46.M; 4 -> 6.6M"},
+    )
 
     def __post_init__(self):
-        if self.downsize:
-            self.encoder_layers = self.encoder_layers // self.downsize
-            self.encoder_ffn_dim = self.encoder_ffn_dim // self.downsize
-            self.encoder_attention_heads = self.encoder_attention_heads // self.downsize
-            self.decoder_layers = self.decoder_layers // self.downsize
-            self.decoder_ffn_dim = self.decoder_ffn_dim // self.downsize
-            self.decoder_attention_heads = self.decoder_attention_heads // self.downsize
-            self.d_model = self.d_model // self.downsize
+        if self.scale:
+            self.encoder_layers = int(self.encoder_layers / self.scale)
+            self.encoder_ffn_dim = int(self.encoder_ffn_dim / self.scale)
+            self.encoder_attention_heads = int(self.encoder_attention_heads / self.scale)
+            self.decoder_layers = int(self.decoder_layers / self.scale)
+            self.decoder_ffn_dim = int(self.decoder_ffn_dim / self.scale)
+            self.decoder_attention_heads = int(self.decoder_attention_heads / self.scale)
+            self.d_model = int(self.d_model / self.scale)
 
 
 @dataclass
