@@ -30,6 +30,7 @@ from src.tokenization import (
 from src.utils import disk_usage
 
 
+# TODO: refactor into a pipeline that will only load the most up-to-date variant
 def get_dataset(
     files: list[Path],
     tokenizer: PreTrainedTokenizerBase,
@@ -92,6 +93,7 @@ def get_dataset(
     grouped_path = dat_path / "grouped"
 
     if use_saved and raw_path.exists():
+        print(f"Retrieving raw dataset from {raw_path.as_posix()}")
         raw_dataset = Dataset.load_from_disk(raw_path.as_posix())
     else:
         raw_dataset = get_raw_assembly_dataset(
@@ -107,12 +109,14 @@ def get_dataset(
     print(BR, flush=True)
 
     if use_saved and split_path.exists():
+        print(f"Retrieving split dataset from {split_path.as_posix()}")
         split_dataset = Dataset.load_from_disk(split_path.as_posix())
     else:
         split_dataset = raw_dataset.map(
             split_instructions_fn,
             batched=False,
             remove_columns="text",
+            num_proc=num_proc,
         )
     if overwrite or not split_path.exists():
         shutil.rmtree(split_path, ignore_errors=True)
@@ -122,12 +126,14 @@ def get_dataset(
     print(BR, flush=True)
 
     if use_saved and tokenized_path.exists():
+        print(f"Retrieving tokenized dataset from {tokenized_path.as_posix()}")
         tokenized_dataset = Dataset.load_from_disk(tokenized_path.as_posix())
     else:
         tokenized_dataset = split_dataset.map(
             tokenize_fn,
             batched=True,
             remove_columns="text",
+            num_proc=num_proc,
         )
     if overwrite or not tokenized_path.exists():
         shutil.rmtree(tokenized_path, ignore_errors=True)
@@ -137,6 +143,7 @@ def get_dataset(
     print(BR, flush=True)
 
     if use_saved and grouped_path.exists():
+        print(f"Retrieving grouped dataset from {grouped_path.as_posix()}")
         grouped_dataset = Dataset.load_from_disk(grouped_path.as_posix())
     else:
         grouped_dataset = tokenized_dataset.map(group_fn, batched=True)

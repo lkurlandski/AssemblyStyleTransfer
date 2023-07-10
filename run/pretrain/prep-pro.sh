@@ -6,11 +6,11 @@
 #SBATCH --output=./logs/%x_%j.out
 #SBATCH --time=3-00:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=8
+#SBATCH --ntasks=16
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 
-export n_tasks_per_node=8
+export n_tasks_per_node=16
 source ~/anaconda3/etc/profile.d/conda.sh
 conda activate AssemblyStyleTransfer
 python src/pretrain/prep.py \
@@ -21,7 +21,7 @@ python src/pretrain/prep.py \
 --tok_overwrite=false \
 --tok_batch_size=4096 \
 --tok_n_files=5000 \
---dat_use_saved=false \
---dat_overwrite=true \
+--dat_use_saved=true \
+--dat_overwrite=false \
 --dat_path="./output/pretrain" \
 --num_proc=$n_tasks_per_node
